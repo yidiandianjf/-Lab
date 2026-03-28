@@ -1,7 +1,7 @@
 import unittest
 
 from src.agent.state_evolution import StateEvolution
-from src.data.models import GameState, Character, CharacterStatus, CharacterAttributes
+from src.data.models import GameState, Character, CharacterStatus, CharacterAttributes, StateChange, ChangeOperation
 
 
 class FakeLLMService:
@@ -87,6 +87,37 @@ class StateEvolutionErroFeedbackTests(unittest.TestCase):
         self.assertEqual(result.narrative, "第二次输出，已修正。")
         self.assertEqual(len(result.changes), 1)
         self.assertEqual(result.changes[0].id, "char-player-01")
+
+    def test_validate_changes_rejects_delete_on_non_list_field(self):
+        agent = StateEvolution(llm_service=FakeLLMService(), system_prompt="test prompt")
+
+        game_state = GameState(
+            characters={
+                "char-player-01": Character(
+                    id="char-player-01",
+                    name="调查员",
+                    status=CharacterStatus(hp=10, max_hp=12, san=60, lucky=50),
+                    attributes=CharacterAttributes(dex=12),
+                    is_player=True,
+                )
+            },
+            player_id="char-player-01",
+        )
+
+        errors = agent.validate_changes(
+            [
+                StateChange(
+                    id="char-player-01",
+                    field="status.hp",
+                    operation=ChangeOperation.DELETE,
+                    value=1,
+                )
+            ],
+            game_state,
+        )
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("DELETE仅允许作用于白名单列表字段", errors[0])
 
 
 if __name__ == "__main__":

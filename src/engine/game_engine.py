@@ -133,6 +133,15 @@ class GameEngine:
         logger.info(f"开始新游戏，世界: {world_name}")
         
         try:
+            clear_method = getattr(self.io, "clear_runtime_store", None)
+            if callable(clear_method):
+                clear_result = clear_method()
+                if clear_result != 0:
+                    logger.error("启动新游戏失败: 清空运行库失败，错误码: %s", clear_result)
+                    return False
+            else:
+                logger.warning("IO系统未提供 clear_runtime_store，跳过运行库清理")
+
             # 清空现有状态
             self.game_state = GameState()
             self._is_game_over = False

@@ -45,6 +45,15 @@ from src.agent.llm_service import LLMService, LLMConfig
 # 配置日志
 logger = logging.getLogger(__name__)
 
+ALLOWED_DELETE_LIST_FIELDS = {
+    "inventory",
+    "neighbors",
+    "entities.items",
+    "entities.characters",
+    "description.public",
+    "memory.log",
+}
+
 # StateEvolutionOutput的JSON Schema（用于LLM输出约束）
 STATE_EVOLUTION_OUTPUT_SCHEMA = {
     "type": "object",
@@ -873,8 +882,8 @@ class StateEvolution:
             
             # 根据操作类型进行额外验证
             if change.operation == ChangeOperation.DELETE:
-                # DELETE操作通常不需要value，或者value为None
-                pass
+                if field not in ALLOWED_DELETE_LIST_FIELDS:
+                    errors.append(f"{prefix}: DELETE仅允许作用于白名单列表字段 '{field}'")
             elif change.operation == ChangeOperation.ADD:
                 # ADD操作通常用于列表类型的字段
                 if entity_id.startswith("char-") and field == "inventory":

@@ -4,7 +4,13 @@ import tempfile
 import json
 from pathlib import Path
 
-from src.data.io_system import ERROR_SUCCESS, ERROR_ID_NOT_FOUND, IOSystem
+from src.data.io_system import (
+    ERROR_SUCCESS,
+    ERROR_ID_NOT_FOUND,
+    ERROR_OPERATION_INVALID,
+    ERROR_OTHER,
+    IOSystem,
+)
 from src.data.init.world_loader import load_initial_world_bundle
 from src.data.models import (
     DMAgentOutput,
@@ -67,6 +73,17 @@ class TransactionalFailingIO(IOSystem):
         if change.id == "bad-entity":
             return ERROR_ID_NOT_FOUND
         return super().apply_state_change(change)
+
+
+class SaveFailingIO(IOSystem):
+    def __init__(self, db_path, fail_map_id):
+        super().__init__(db_path=db_path, mode="sqlite")
+        self.fail_map_id = fail_map_id
+
+    def save_map(self, map_obj):
+        if map_obj.id == self.fail_map_id:
+            return ERROR_OTHER
+        return super().save_map(map_obj)
 
 
 class DummyRuleSystem:
@@ -1087,6 +1104,70 @@ class RegressionFlowTests(unittest.TestCase):
             self.assertIsNotNone(persisted_player)
             self.assertEqual(persisted_player.status.hp, original_hp)
             self.assertEqual(engine.game_state.turn_count, bundle.game_state.turn_count)
+            if hasattr(io, "_session") and io._session is not None:
+                io._session.close()
+            if hasattr(io, "engine"):
+                io.engine.dispose()
+
+    def test_save_game_state_returns_failure_when_entity_save_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            seed_io = IOSystem(db_path=str(Path(tmpdir) / "seed.db"), mode="sqlite")
+            bundle = load_initial_world_bundle(seed_io, player_name="测试者", world_name="mysterious_library")
+
+            fail_map_id = next(iter(bundle.game_state.maps.keys()))
+            io = SaveFailingIO(db_path=str(Path(tmpdir) / "save_fail.db"), fail_map_id=fail_map_id)
+            result = io.save_game_state(bundle.game_state)
+
+            self.assertEqual(result, ERROR_OTHER)
+
+            if hasattr(seed_io, "_session") and seed_io._session is not None:
+                seed_io._session.close()
+            if hasattr(seed_io, "engine"):
+                seed_io.engine.dispose()
+            if hasattr(io, "_session") and io._session is not None:
+                io._session.close()
+            if hasattr(io, "engine"):
+                io.engine.dispose()
+
+    def test_clear_runtime_store_removes_loaded_world_entities(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            io = IOSystem(db_path=str(Path(tmpdir) / "game.db"), mode="sqlite")
+            bundle = load_initial_world_bundle(io, player_name="测试者", world_name="mysterious_library")
+
+            player_id = bundle.game_state.player_id
+            self.assertIsNotNone(io.get_character(player_id))
+            self.assertGreater(len(bundle.game_state.items), 0)
+            sample_item_id = next(iter(bundle.game_state.items.keys()))
+            self.assertIsNotNone(io.get_item(sample_item_id))
+
+            result = io.clear_runtime_store()
+            self.assertEqual(result, ERROR_SUCCESS)
+            self.assertIsNone(io.get_character(player_id))
+            self.assertIsNone(io.get_item(sample_item_id))
+            self.assertIsNone(io.load_game_state())
+
+            if hasattr(io, "_session") and io._session is not None:
+                io._session.close()
+            if hasattr(io, "engine"):
+                io.engine.dispose()
+
+    def test_delete_scalar_field_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            io = IOSystem(db_path=str(Path(tmpdir) / "game.db"), mode="sqlite")
+            bundle = load_initial_world_bundle(io, player_name="测试者", world_name="mysterious_library")
+            player_id = bundle.game_state.player_id
+
+            result = io.apply_state_change(
+                StateChange(
+                    id=player_id,
+                    field="status.hp",
+                    operation=ChangeOperation.DELETE,
+                    value=1,
+                )
+            )
+
+            self.assertEqual(result, ERROR_OPERATION_INVALID)
+
             if hasattr(io, "_session") and io._session is not None:
                 io._session.close()
             if hasattr(io, "engine"):

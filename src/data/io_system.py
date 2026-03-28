@@ -60,6 +60,15 @@ ERROR_FIELD_NOT_FOUND = 2
 ERROR_OPERATION_INVALID = 3
 ERROR_OTHER = 4
 
+ALLOWED_DELETE_LIST_FIELDS = {
+    "inventory",
+    "neighbors",
+    "entities.items",
+    "entities.characters",
+    "description.public",
+    "memory.log",
+}
+
 
 # ============================================================
 # IO系统核心类
@@ -123,6 +132,34 @@ class IOSystem:
         (self.json_dir / "characters").mkdir(exist_ok=True)
         (self.json_dir / "items").mkdir(exist_ok=True)
         (self.json_dir / "maps").mkdir(exist_ok=True)
+
+    def clear_runtime_store(self) -> int:
+        """清空当前运行库存量数据，避免新世界加载时混入旧实体。"""
+        try:
+            if self.mode == "sqlite":
+                self._session.query(CharacterORM).delete()
+                self._session.query(ItemORM).delete()
+                self._session.query(MapORM).delete()
+                self._session.query(GameMetaORM).delete()
+                self._session.commit()
+            else:
+                for folder in ("characters", "items", "maps"):
+                    target_dir = self.json_dir / folder
+                    if not target_dir.exists():
+                        continue
+                    for file_path in target_dir.glob("*.json"):
+                        file_path.unlink()
+
+                meta_path = self.json_dir / "game_state.json"
+                if meta_path.exists():
+                    meta_path.unlink()
+
+            return ERROR_SUCCESS
+        except Exception as e:
+            print(f"[IOSystem] 清空运行库失败: {e}")
+            if self.mode == "sqlite":
+                self._session.rollback()
+            return ERROR_OTHER
 
     @staticmethod
     def _normalize_public_description_value(value: Any) -> List[Dict[str, str]]:
@@ -806,6 +843,9 @@ class IOSystem:
     
     def _do_delete(self, entity: Any, field: str, value: Any, saver) -> int:
         """执行删除操作"""
+        if field not in ALLOWED_DELETE_LIST_FIELDS:
+            return ERROR_OPERATION_INVALID
+
         parts = field.split(".")
         obj = entity
         
@@ -816,14 +856,20 @@ class IOSystem:
                 return ERROR_FIELD_NOT_FOUND
         
         last_part = parts[-1]
-        target = getattr(obj, last_part)
-        
-        if isinstance(target, list) and value in target:
-            target.remove(value)
-        elif hasattr(obj, last_part):
-            delattr(obj, last_part)
-        else:
+        if not hasattr(obj, last_part):
             return ERROR_FIELD_NOT_FOUND
+
+        target = getattr(obj, last_part)
+        if not isinstance(target, list):
+            return ERROR_OPERATION_INVALID
+
+        if isinstance(value, list):
+            for one in value:
+                if one in target:
+                    target.remove(one)
+        else:
+            if value in target:
+                target.remove(value)
         
         result = saver(entity)
         return result if result is not None else ERROR_SUCCESS
@@ -837,11 +883,20 @@ class IOSystem:
         try:
             # 保存所有实体
             for char in game_state.characters.values():
-                self.save_character(char)
+                result = self.save_character(char)
+                if result != ERROR_SUCCESS:
+                    print(f"[IOSystem] 保存游戏状态失败: 角色 {char.id} 保存错误码 {result}")
+                    return result
             for item in game_state.items.values():
-                self.save_item(item)
+                result = self.save_item(item)
+                if result != ERROR_SUCCESS:
+                    print(f"[IOSystem] 保存游戏状态失败: 物品 {item.id} 保存错误码 {result}")
+                    return result
             for map_obj in game_state.maps.values():
-                self.save_map(map_obj)
+                result = self.save_map(map_obj)
+                if result != ERROR_SUCCESS:
+                    print(f"[IOSystem] 保存游戏状态失败: 地图 {map_obj.id} 保存错误码 {result}")
+                    return result
             
             # 保存元数据
             meta = {

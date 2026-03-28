@@ -553,9 +553,6 @@ class InputSystem:
             value=target_map.id
         ))
 
-        # 保持兼容：同步current_scene_id
-        game_state.current_scene_id = target_map.id
-
         return f"你移动到了 {target_map.name}。", changes
 
     def _cmd_where(
