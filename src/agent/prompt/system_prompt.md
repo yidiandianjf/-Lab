@@ -55,19 +55,17 @@
 - actionable_npcs: 给出本轮建议参与响应的NPC ID列表（按优先级顺序）
 
 当上下文中的NPC响应模式为：
-- queue：此字段仅作参考，系统可能走队列前置机制
-- reactive：此字段会直接驱动是否触发NPC响应
+- unified：系统会在玩家行动后统一处理NPC响应
 
 你还会收到动态上下文字段：
 - NPC模式策略（npc_response_policy）
 - 当前行动队列快照（action_queue）
 - 当前行动者（current_actor_id）
-- 本轮前置NPC行动摘要（npc_prelude，仅queue模式可能出现）
+- 本轮前置NPC行动摘要（npc_prelude，可选）
 
 决策要求：
-- queue模式：优先保证玩家行动解析稳定，npc_response_*字段尽量保守。
-- reactive模式：若玩家行动应立即引发NPC回应，则明确给出npc_response_needed=true与npc_actor_id。
-- reactive模式补充：
+- unified模式：若玩家行动应引发NPC回应，则明确给出npc_response_needed=true与npc_actor_id。
+- unified模式补充：
   - action_description只描述玩家本轮意图与动作，不要提前写出NPC最终态度结论。
   - 若行动结果依赖NPC是否同意/阻止，交给后续NPC响应阶段决定。
   - npc_intent应简短明确（例如："同意借灯"、"拒绝并阻止拿取"）。
@@ -78,24 +76,27 @@
 
 ```json
 {
-  "is_dialogue": "bool",
-  "response_to_player": "（如果是纯对话，这里是对玩家的回复）",
-  "needs_check": "bool",
+  "is_dialogue": false,
+  "response_to_player": "如果是纯对话，这里是对玩家的回复",
+  "needs_check": false,
   "check_type": "非对抗鉴定",
-  "check_attributes": ["", "int"],
+  "check_attributes": ["int"],
   "check_target": null,
-  "difficulty": "",#提供所有可选项
-  "action_description": "",#描述而非提供信息
-  ---
-  #修改建议:交给npcDirector来判断:
-  "npc_response_needed": false,  
+  "difficulty": "常规",
+  "action_description": "玩家尝试观察房间内的异常痕迹",
+  "npc_response_needed": false,
   "npc_actor_id": null,
   "npc_intent": null,
-  ---
   "actionable_npcs": [],
   "erro": ""
 }
 ```
+
+### 代码权威边界（必须遵守）
+
+1. `npc_actor_id` 与 `actionable_npcs` 仅为建议提示，最终由代码层做合法性筛选与排序。
+2. `check_attributes`、`check_target`、`difficulty` 会被代码层校验；不合法值会触发 `erro` 反馈并要求你重试。
+3. 不要为弥补链路而发明字段，输出必须严格限定在协议字段内。
 
 ### 输出字段说明
 

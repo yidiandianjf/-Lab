@@ -7,7 +7,7 @@
 - 玩家意图解析结果
 - 需要决策的 NPC 列表
 - 近期叙事事件
-- 触发来源标签（queue/reactive/unified）
+- 触发来源标签（unified）
 - PlayerResolutionAnchor（由检定系统产出，包含胜负事实与玩家阶段结果）
 
 ## 目标
@@ -33,7 +33,7 @@
         "difficulty": "regular",
         "check_target_id": "可选"
       },
-      "trigger_source": "queue|reactive|unified",
+      "trigger_source": "unified",
       "metadata": {
         "reason": "简短决策理由"
       }

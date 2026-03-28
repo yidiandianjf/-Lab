@@ -34,9 +34,13 @@ from pathlib import Path
 from src.data.models import (
     DMAgentInput,
     DMAgentOutput,
+    DMAgentOutputV2,
+    ActivationHint,
+    CheckPlan,
     GameState,
     Character,
     Map,
+    TurnIntent,
 )
 from src.agent.llm_service import LLMService, LLMConfig
 from src.rule.rule_system import get_attribute_value
@@ -262,6 +266,49 @@ class DMAgent:
         except Exception as e:
             logger.error(f"解析意图时发生异常: {e}")
             return self._create_fallback_output(player_input, str(e))
+
+    def parse_intent_v2(
+        self,
+        player_input: str,
+        game_state: Optional[GameState] = None,
+        dialogue_history: Optional[List[str]] = None,
+        additional_context: Optional[Dict[str, Any]] = None,
+    ) -> DMAgentOutputV2:
+        """Phase 3 adapter: emit TurnIntent-based output while reusing existing DM parsing."""
+        legacy = self.parse_intent(
+            player_input=player_input,
+            game_state=game_state,
+            dialogue_history=dialogue_history,
+            additional_context=additional_context,
+        )
+
+        interaction_type = "action"
+        if legacy.is_dialogue and legacy.needs_check:
+            interaction_type = "mixed"
+        elif legacy.is_dialogue:
+            interaction_type = "dialogue"
+
+        turn_intent = TurnIntent(
+            actor_id=(game_state.player_id if game_state and game_state.player_id else ""),
+            raw_input_text=player_input,
+            intent_text=legacy.action_description or player_input,
+            interaction_type=interaction_type,
+            check_plan=CheckPlan(
+                check_needed=bool(legacy.needs_check),
+                check_type=legacy.check_type,
+                attributes=list(legacy.check_attributes or []),
+                target_id=legacy.check_target,
+                difficulty=legacy.difficulty,
+            ),
+            activation_hint=ActivationHint(
+                response_needed_hint=bool(legacy.npc_response_needed),
+                preferred_actor_id=legacy.npc_actor_id,
+                npc_intent_hint=legacy.npc_intent,
+                candidate_npc_ids_hint=list(legacy.actionable_npcs or []),
+            ),
+        )
+        response_to_player = legacy.response_to_player if legacy.is_dialogue else None
+        return DMAgentOutputV2(turn_intent=turn_intent, response_to_player=response_to_player)
 
     def _append_error_feedback(self, prompt: str, error_feedback: str) -> str:
         """将系统错误反馈追加到Prompt，用于引导LLM纠正输出。"""

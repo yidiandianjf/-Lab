@@ -129,10 +129,10 @@
 #### 2.2.1 清理提示词漂移（发现6）
 
 **问题清单：**
-- [ ] DM Prompt JSON 示例混入 `---` 和修改建议文本
-- [ ] State Evolution Prompt 保留 `Move` 草案备注
-- [ ] NPC推演提到 `npc_action` 字段但模型中不存在
-- [ ] 提示词仍要求"同时更新 inventory"但IO层已自动处理双向关系
+- [x] DM Prompt JSON 示例混入 `---` 和修改建议文本
+- [x] State Evolution Prompt 保留 `Move` 草案备注
+- [x] NPC推演提到 `npc_action` 字段但模型中不存在
+- [x] 提示词仍要求"同时更新 inventory"但IO层已自动处理双向关系
 
 **修补方案：**
 - 删除所有 `#修改建议`、占位分隔符、过时字段说明
@@ -141,6 +141,12 @@
 **涉及文件：**
 - [`src/agent/prompt/system_prompt.md`](src/agent/prompt/system_prompt.md:89-96)
 - [`src/agent/prompt/state_evolution_prompt.md`](src/agent/prompt/state_evolution_prompt.md:71)
+
+**落实说明（2026-03-28）：**
+- 已移除 DM Prompt 中非法 JSON 占位分隔符与建议性注释，示例改为可直接解析的合法 JSON。
+- 已移除 State Evolution Prompt 中 `Move` 草案注释，改为当前协议可执行约束。
+- 已将“物品迁移”描述改为：优先更新 `item.location`，关系同步由代码层自动维护。
+- 已核查 `src/agent/npc/prompt/npc_director_prompt.md`，未保留 `npc_action` 旧字段定义。
 
 ---
 
@@ -171,6 +177,10 @@
 - 不再新增新的模式分支
 - 在文档中明确：`queue/unified` 属于待收敛兼容语义
 
+**落实说明（2026-03-28）：**
+- 运行链路保持 `npc_response_mode` 兼容语义，不删除字段、不新增模式分支。
+- 当前统一口径：`queue/unified` 均为迁移期兼容模式；实际差异仅体现在触发来源标记，不扩展额外行为语义。
+
 **保留：**
 - `_action_queue` 内部队列（用于NPC排序）
 - `npc_response_mode` 配置项（迁移期兼容）
@@ -198,6 +208,49 @@
 **当前阶段要求：**
 - 完成设计评估
 - 不强制作为 P0 阻塞项
+
+**评估结论与落地（2026-03-28）：**
+- 结论：`move` 作为高阶操作方向正确，但暂不并入现行 `ChangeOperation`，避免与主协议重构并行耦合。
+- 当前落地策略：
+  1. 继续以 `item.location update` 作为迁移事实入口；
+  2. 由 IO 层自动同步 inventory 与地图实体关系，LLM 不再手工输出双向 inventory 变更；
+  3. DELETE 收敛到白名单列表字段，降低“先 add/del 再补关系”导致的数据污染风险。
+- 迁移门槛：待 Phase 1 完成 `TurnResolution/StateChange` 收敛后，再评审是扩展 `ChangeOperation` 还是引入独立高阶 `MoveChange`。
+
+---
+
+### 2.2.x P1执行记录（用于会话切换）
+
+**已合并修复清单（2026-03-28）：**
+1. Prompt 漂移清理
+    - `src/agent/prompt/system_prompt.md`
+    - `src/agent/prompt/state_evolution_prompt.md`
+2. 兼容语义保持（queue/unified）
+    - `src/engine/game_engine.py`（保留兼容字段，不新增分支）
+    - `src/data/init/world_loader.py`（保留模式解析）
+3. move 评估落地（非协议扩展）
+    - `src/agent/prompt/state_evolution_prompt.md`（迁移指引更新）
+    - `src/data/io_system.py`（关系同步与 DELETE 收敛已落实）
+
+**验证记录：**
+- 命令：`conda activate a_engine; python -m pytest tests/test_llm_json_retry.py tests/test_state_evolution_error_feedback.py -q`
+- 结果：通过（5 passed）。
+
+**真实 LLM 调试记录（2026-03-28）：**
+- 执行方式：直接调用运行时 `DMAgent.parse_intent(...)`（非 mock/stub）。
+- 模型链路：`qwen3.5-122b-a10b`，HTTP 请求返回 `200 OK`。
+- 调试输入：`我想仔细观察书架上的奇怪痕迹，并问守卫他昨晚听到了什么。`
+- 调试输出摘要：
+    - `is_dialogue=false`
+    - `needs_check=true`
+    - `check_attributes=["int"]`
+    - `npc_response_needed=true`
+    - `npc_actor_id="char-guard-01"`
+- 结论：P1 提示词收敛后，真实 LLM 链路可用，输出结构与当前代码协议一致。
+
+**调试要求（强制）：**
+- 调试阶段必须调用当前配置的真实 LLM 服务，禁止用 mock/stub 替代线上推理路径。
+- 建议在每次协议变更后至少执行 3 次真实 LLM 意图解析 + 3 次状态推演调用，并记录输入、输出与错误反馈链路。
 
 ---
 
@@ -538,6 +591,44 @@ class PersistenceSnapshotV2(BaseModel):
 **收敛原则：**
 - Prompt 只描述新协议，不保留旧字段兼容说明
 - 兼容层只保留在适配器中，不保留在 Prompt 里
+
+---
+
+### 3.10 一次性实施结果（2026-03-28）
+
+**实施状态：**
+- [x] Phase 1：新增 `TurnIntent/TurnResolution/TurnStep/TurnTrace` 等协议模型
+- [x] Phase 2：新增 `src/engine/context_builders.py`，拆分世界视图/记忆视图/回合链视图构建
+- [x] Phase 3：新增 `DMAgentOutputV2` 与 `DMAgent.parse_intent_v2()` 适配输出
+- [x] Phase 4：玩家主流程在引擎层组装 `TurnResolution` 与 `TurnStep`，写入 `TurnTrace`
+- [x] Phase 5：NPC统一响应链路写入 `TurnStep`，同回合共享 `TurnTrace`
+- [x] Phase 6：`NarrativeMerger` 新增 `merge_v2()`，基于 `turn_trace_steps` 合并叙事
+- [x] Phase 7：存档新增 `dialogue_memory` / `narrative_memory` / `recent_turn_trace_digests`
+- [x] Phase 8：Prompt 漂移清理已完成，遗留兼容流程保持可运行（迁移期保留）
+
+**新增/关键改动文件：**
+- `src/data/models.py`
+- `src/engine/context_builders.py`
+- `src/engine/game_engine.py`
+- `src/agent/dm_agent.py`
+- `src/narrative/narrative_merger.py`
+
+**单元测试执行记录：**
+- `python -m pytest tests/test_architecture_refactor_increment.py tests/test_regression_flow.py -k "normalize_state_change_coerces_scalar_delete_to_update or architecture_refactor_increment or move_command" -q`
+    - 结果：`15 passed`
+- `python -m pytest tests/test_architecture_refactor_increment.py tests/test_regression_flow.py tests/test_llm_json_retry.py tests/test_state_evolution_error_feedback.py -q`
+    - 结果：`54 passed`
+- `python -m pytest -q`
+    - 结果：`71 passed`
+
+**真实 LLM 全量测试记录：**
+- 引擎全链路（DM + Rule + StateEvolution + NPC + NarrativeMerger + Save/Load）
+    - 轮次：4轮自然语言输入
+    - 结果：4轮均 `success=true`，并完成存档/读档，`loaded_trace_digest_count=4`
+- 组件级全量调用（非 mock）
+    - `DMAgent.parse_intent`：3次真实调用，HTTP 200
+    - `StateEvolution.evolve_player_action`：3次真实调用，HTTP 200
+    - 结论：新协议适配链路在真实模型 `qwen3.5-122b-a10b` 下可运行，且输出可被当前代码消费
 
 ---
 

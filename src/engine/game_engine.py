@@ -21,12 +21,20 @@ from src.data.models import (
     Character, Item, Map, MapNeighbor, GameState, StateChange, ChangeOperation,
     DMAgentOutput, CheckInput, CheckOutput,
     StateEvolutionOutput,
-    CheckType, CheckDifficulty
+    CheckType, CheckDifficulty,
+    ActivationHint, CheckPlan, DialogueMemoryView, NarrativeMemoryView,
+    OutcomeSummary, TurnIntent, TurnResolution, TurnStep, TurnTrace, TurnTraceDigest,
 )
 from src.agent.input_system import InputSystem, InputResult, InputType
 from src.agent.dm_agent import DMAgent
 from src.agent.state_evolution import StateEvolution as StateEvolutionAgent
 from src.data.init.world_loader import load_initial_world_bundle
+from src.engine.context_builders import (
+    DialogueMemoryBuilder,
+    NarrativeMemoryBuilder,
+    TurnTraceContextBuilder,
+    WorldStateViewBuilder,
+)
 try:
     from src.narrative import NarrativeContext, NarrativeContextSnapshot, NarrativeEvent, NarrativeMerger
 except Exception:  # pragma: no cover - optional module
@@ -99,6 +107,12 @@ class GameEngine:
         self.npc_director = self._create_npc_director()
         self.dm_dialogue_log: List[Dict[str, str]] = []  # DM与玩家对话记录
         self._pending_npc_action_plans: Dict[str, Any] = {}
+        self._current_turn_trace = TurnTrace(turn_id=0)
+        self._recent_turn_trace_digests: List[TurnTraceDigest] = []
+        self._world_view_builder = WorldStateViewBuilder()
+        self._dialogue_memory_builder = DialogueMemoryBuilder()
+        self._narrative_memory_builder = NarrativeMemoryBuilder()
+        self._turn_trace_context_builder = TurnTraceContextBuilder()
         
         # 回合管理
         self._action_queue: List[str] = []  # 可行动角色队列
@@ -107,7 +121,7 @@ class GameEngine:
         self.set_npc_response_mode(npc_response_mode)
         
         # 世界配置（可被外部加载器覆盖）
-        self.world_name = "default"#修改建议:检查一下各个默认值是否统一
+        self.world_name = "default"
         self.end_condition = "玩家死亡或达成剧情结局"
         self._ending_rules: List[Dict[str, Any]] = []
         
@@ -117,7 +131,7 @@ class GameEngine:
     # 游戏生命周期管理
     # ============================================================
     
-    def new_game( #修改建议:检查一下这个函数用到没有,main.py里有一个start_new_game 这儿又有一个,思考一下需不需要统一接口
+    def new_game(
         self,
         world_name: str = "mysterious_library"
     ) -> bool:
@@ -204,6 +218,17 @@ class GameEngine:
                 save_data = json.load(f)
             self.dm_dialogue_log = save_data.pop("dm_dialogue_log", [])
             self._restore_narrative_context(save_data.pop("narrative_context", None))
+            turn_trace_digests_payload = save_data.pop("recent_turn_trace_digests", [])
+            restored_digests: List[TurnTraceDigest] = []
+            if isinstance(turn_trace_digests_payload, list):
+                for one in turn_trace_digests_payload:
+                    if isinstance(one, dict):
+                        try:
+                            restored_digests.append(TurnTraceDigest(**one))
+                        except Exception:
+                            continue
+            self._recent_turn_trace_digests = restored_digests[-20:]
+            self._current_turn_trace = TurnTrace(turn_id=int(save_data.get("turn_count", 0) or 0))
             world_metadata = save_data.pop("world_metadata", {})
             if not isinstance(world_metadata, dict):
                 world_metadata = {}
@@ -261,7 +286,12 @@ class GameEngine:
             narrative_state = self._dump_narrative_context()
             if narrative_state:
                 save_data["narrative_context"] = narrative_state
-            save_data["save_version"] = 1
+            save_data["dialogue_memory"] = self._dialogue_memory_builder.build(self.dm_dialogue_log).model_dump()
+            save_data["narrative_memory"] = self._narrative_memory_builder.build(self._dump_narrative_context()).model_dump()
+            save_data["recent_turn_trace_digests"] = [
+                digest.model_dump() for digest in self._recent_turn_trace_digests[-20:]
+            ]
+            save_data["save_version"] = 2
             save_data["world_metadata"] = {
                 "world_name": self.world_name,
                 "end_condition": self.end_condition,
@@ -298,7 +328,7 @@ class GameEngine:
         """应用世界级配置（例如来自world.json）。"""
         self.world_name = world_name
         self.end_condition = end_condition or self.end_condition
-        if npc_response_mode:
+        if npc_response_mode is not None:
             self.set_npc_response_mode(npc_response_mode)
         if narrative_window is not None:
             self._set_narrative_window(narrative_window)
@@ -346,6 +376,7 @@ class GameEngine:
         try:
             # ===== Step 1: 回合开始 =====
             self._turn_start()
+            self._begin_turn_trace()
             
             # ===== Step 2: 获取行动意图 =====
             input_result = self.input_system.parse_input(user_input)
@@ -388,7 +419,7 @@ class GameEngine:
                         return result
 
                     if cmd_result.direct_response == "DEBUG_MODE_OFF":
-                        logging.getLogger().setLevel(logging.INFO)  #修改建议:没有提供关闭调试指令的'\'指令
+                        logging.getLogger().setLevel(logging.INFO)
                         result["response"] = "调试模式已关闭"
                         return result
                     
@@ -414,6 +445,7 @@ class GameEngine:
                 natural_input,
                 npc_prelude_text="",
             )
+            turn_intent = self._build_turn_intent_from_dm(natural_input, dm_output)
             
             # 纯对话场景优先返回玩家可见回复，但如果 DM 明确要求 NPC 继续响应，
             # 仍然保留后续流程，避免把“对话”误判成“流程终止”。
@@ -437,6 +469,7 @@ class GameEngine:
 
             # ===== Step 5: 状态推演系统 =====
             evolution_result = None
+            player_turn_resolution: Optional[TurnResolution] = None
             if not dm_output.is_dialogue:
                 evolution_result = self._state_evolution(
                     dm_output=dm_output,
@@ -447,6 +480,19 @@ class GameEngine:
                     dm_output=dm_output,
                     check_result=check_output,
                     evolution_result=evolution_result,
+                )
+                player_turn_resolution = TurnResolution(
+                    actor_id=self.game_state.player_id or "",
+                    phase="player",
+                    intent_text=turn_intent.intent_text,
+                    check_result=check_output,
+                    state_changes=list(evolution_result.changes or []),
+                    local_narrative=evolution_result.narrative or "",
+                    outcome=OutcomeSummary(
+                        action_succeeded=bool(player_resolution_anchor.get("action_succeeded", True)),
+                        outcome_type="player_action",
+                        consequence_tags=[],
+                    ),
                 )
 
             fragments: List[Dict[str, str]] = []
@@ -468,10 +514,24 @@ class GameEngine:
                     result["response"] = f"状态变更失败: {failures[0]}"
                     return result
 
+            if player_turn_resolution is not None:
+                self._current_turn_trace.append_step(
+                    TurnStep(
+                        step_id=f"turn-{self.game_state.turn_count}-player-1",
+                        turn_id=self.game_state.turn_count,
+                        actor_id=self.game_state.player_id or "",
+                        phase="player",
+                        trigger_source="player_input",
+                        intent=turn_intent,
+                        resolution=player_turn_resolution,
+                    )
+                )
+
             npc_follow = self._process_unified_npc_response(
                 dm_output=dm_output,
                 player_check=check_output,
                 player_resolution_anchor=player_resolution_anchor,
+                player_turn_intent=turn_intent,
             )
             if npc_follow.get("change_failures"):
                 result["success"] = False
@@ -483,6 +543,7 @@ class GameEngine:
                 fragments,
                 truth_anchor=player_resolution_anchor,
             )
+
             result["narrative"] = merged_narrative
             self._current_narrative = merged_narrative
             self._record_dm_dialogue(natural_input, merged_narrative)
@@ -545,6 +606,7 @@ class GameEngine:
             
             # ===== Step 7: 回合结束 =====
             self._turn_end(resolved=evolution_result.resolved if evolution_result else True)
+            self._finalize_turn_trace(merged_narrative=merged_narrative)
             
         except Exception as e:
             logger.error(f"处理输入时发生错误: {e}")
@@ -572,8 +634,72 @@ class GameEngine:
         
         logger.debug(f"第 {self.game_state.turn_count} 回合开始，当前行动者: {self._current_actor_id}")
 
+    def _begin_turn_trace(self) -> None:
+        """Initialize per-turn trace container."""
+        self._current_turn_trace = TurnTrace(turn_id=self.game_state.turn_count)
+
+    def _finalize_turn_trace(self, merged_narrative: str = "") -> None:
+        """Persist a compact digest of the current turn trace for save/replay."""
+        if not self._current_turn_trace.steps:
+            return
+
+        actor_ids = []
+        seen = set()
+        for step in self._current_turn_trace.steps:
+            if step.actor_id and step.actor_id not in seen:
+                seen.add(step.actor_id)
+                actor_ids.append(step.actor_id)
+
+        summary = merged_narrative.strip()
+        if not summary:
+            summary = " | ".join(
+                (one.resolution.local_narrative or one.intent.intent_text or "").strip()
+                for one in self._current_turn_trace.steps
+                if (one.resolution.local_narrative or one.intent.intent_text or "").strip()
+            )
+
+        digest = TurnTraceDigest(
+            turn_id=self._current_turn_trace.turn_id,
+            summary=summary,
+            actor_ids=actor_ids,
+        )
+        self._recent_turn_trace_digests.append(digest)
+        self._recent_turn_trace_digests = self._recent_turn_trace_digests[-20:]
+
+    def _build_turn_intent_from_dm(self, raw_input_text: str, dm_output: DMAgentOutput) -> TurnIntent:
+        """Adapt legacy DM output into TurnIntent protocol object."""
+        interaction_type = "action"
+        if dm_output.is_dialogue and dm_output.needs_check:
+            interaction_type = "mixed"
+        elif dm_output.is_dialogue:
+            interaction_type = "dialogue"
+
+        check_plan = CheckPlan(
+            check_needed=bool(dm_output.needs_check),
+            check_type=dm_output.check_type,
+            attributes=list(dm_output.check_attributes or []),
+            target_id=dm_output.check_target,
+            difficulty=dm_output.difficulty,
+        )
+
+        activation_hint = ActivationHint(
+            response_needed_hint=bool(dm_output.npc_response_needed),
+            preferred_actor_id=dm_output.npc_actor_id,
+            npc_intent_hint=dm_output.npc_intent,
+            candidate_npc_ids_hint=list(dm_output.actionable_npcs or []),
+        )
+
+        return TurnIntent(
+            actor_id=self.game_state.player_id or "",
+            raw_input_text=raw_input_text,
+            intent_text=dm_output.action_description or raw_input_text,
+            interaction_type=interaction_type,
+            check_plan=check_plan,
+            activation_hint=activation_hint,
+        )
+
     def _process_npc_turns_until_player(self) -> Dict[str, Any]:
-        """在玩家输入前处理连续NPC回合，直到轮到玩家或游戏结束。"""
+        """历史兼容入口：统一响应流程下的单步NPC处理。"""
         narratives: List[str] = []
         max_steps = 1
 
@@ -595,7 +721,7 @@ class GameEngine:
                 continue
 
             planned_actions = self._plan_npc_actions(
-                trigger="queue",
+                trigger="unified",
                 candidate_npc_ids=[actor.id],
             )
             if planned_actions:
@@ -610,7 +736,7 @@ class GameEngine:
                 check_result=npc_check,
                 npc_intent=self._extract_npc_intent_from_plan(planned_action),
                 additional_context=self._build_npc_runtime_context(
-                    trigger="queue",
+                    trigger="unified",
                     npc_action_plan=planned_action,
                 ),
             )
@@ -631,7 +757,7 @@ class GameEngine:
                     actor_id=actor.id,
                     actor_name=actor.name,
                     text=npc_output.narrative,
-                    source="npc_queue",
+                    source="npc_unified",
                 )
 
             if npc_output.is_end:
@@ -687,12 +813,12 @@ class GameEngine:
         logger.debug(f"DM Agent解析结果: needs_check={dm_output.needs_check}")
         return dm_output
 
-    def _process_reactive_npc_response(
+    def _process_legacy_npc_response(
         self,
         dm_output: DMAgentOutput,
         player_check: Optional[CheckOutput],
     ) -> Dict[str, Any]:
-        """响应式NPC流程：仅在DM判定需要时触发。"""
+        """历史兼容入口：按DM提示触发统一响应。"""
         if not hasattr(self.state_agent, "evolve_npc_action"):
             return {"game_over": False, "narrative": ""}
 
@@ -720,11 +846,54 @@ class GameEngine:
             check_result=npc_check,
             npc_intent=dm_output.npc_intent or self._extract_npc_intent_from_plan(action_plan),
             additional_context=self._build_npc_runtime_context(
-                trigger="reactive",
+                trigger="unified",
                 player_check=player_check,
                 player_action_description=dm_output.action_description,
                 npc_action_plan=action_plan,
             ),
+        )
+
+        npc_intent_text = dm_output.npc_intent or self._extract_npc_intent_from_plan(action_plan) or "NPC响应玩家行动"
+        self._current_turn_trace.append_step(
+            TurnStep(
+                step_id=f"turn-{self.game_state.turn_count}-npc-{npc.id}",
+                turn_id=self.game_state.turn_count,
+                actor_id=npc.id,
+                phase="npc",
+                trigger_source="unified",
+                intent=TurnIntent(
+                    actor_id=npc.id,
+                    raw_input_text=dm_output.action_description,
+                    intent_text=npc_intent_text,
+                    interaction_type="action",
+                    check_plan=CheckPlan(
+                        check_needed=npc_check is not None,
+                        check_type="非对抗鉴定" if npc_check is not None else None,
+                        attributes=["dex"] if npc_check is not None else None,
+                        target_id=None,
+                        difficulty="常规" if npc_check is not None else None,
+                    ),
+                    activation_hint=ActivationHint(
+                        response_needed_hint=True,
+                        preferred_actor_id=npc.id,
+                        npc_intent_hint=npc_intent_text,
+                        candidate_npc_ids_hint=[npc.id],
+                    ),
+                ),
+                resolution=TurnResolution(
+                    actor_id=npc.id,
+                    phase="npc",
+                    intent_text=npc_intent_text,
+                    check_result=npc_check,
+                    state_changes=list(npc_output.changes or []),
+                    local_narrative=npc_output.narrative or "",
+                    outcome=OutcomeSummary(
+                        action_succeeded=not bool(npc_output.is_end),
+                        outcome_type="npc_response",
+                        consequence_tags=[],
+                    ),
+                ),
+            )
         )
 
         if npc_output.changes:
@@ -742,7 +911,7 @@ class GameEngine:
                 actor_id=npc.id,
                 actor_name=npc.name,
                 text=npc_output.narrative,
-                source="npc_reactive",
+                source="npc_unified",
             )
 
         return {
@@ -823,6 +992,11 @@ class GameEngine:
         Returns:
             状态推演结果
         """
+        world_view = self._world_view_builder.build(self.game_state, self.game_state.player_id or "")
+        dialogue_memory = self._dialogue_memory_builder.build(self.dm_dialogue_log)
+        narrative_memory = self._narrative_memory_builder.build(self._dump_narrative_context())
+        turn_trace_view = self._turn_trace_context_builder.build_full(self._current_turn_trace)
+
         # 调用状态推演
         evolution_output = self.state_agent.evolve_player_action(
             check_result=check_result,
@@ -830,8 +1004,12 @@ class GameEngine:
             game_state=self.game_state,
             additional_context={
                 "engine_context": self._build_game_context(),
-                    "narrative_context": self._get_narrative_context_for_llm(),
-                    "player_resolution_anchor": player_resolution_anchor or {},
+                "world_state_view": world_view.model_dump(),
+                "dialogue_memory": dialogue_memory.model_dump(),
+                "narrative_memory": narrative_memory.model_dump(),
+                "turn_trace_so_far": turn_trace_view.model_dump(),
+                "narrative_context": self._get_narrative_context_for_llm(),
+                "player_resolution_anchor": player_resolution_anchor or {},
                 "npc_response_mode": self._npc_response_mode,
                 "npc_response_policy": self._describe_npc_mode_policy(),
                 "npc_response_expected": bool(
@@ -975,17 +1153,46 @@ class GameEngine:
         return result
 
     def _normalize_state_change(self, change: StateChange) -> StateChange:
-        """对LLM产出的变更做ID容错，避免因格式差异导致变更丢失。"""
+        """对LLM产出的变更做ID容错与操作收敛。"""
         resolved_id = self._resolve_entity_id(change.id)
-        if resolved_id == change.id:
+
+        normalized_operation = change.operation
+        normalized_value = change.value
+        normalized_field = change.field
+
+        # DELETE仅允许白名单列表字段；若LLM对标量字段给出DELETE，收敛为UPDATE默认值。
+        if change.operation == ChangeOperation.DELETE and change.field in {
+            "location",
+            "basic_info",
+            "name",
+            "description.hint",
+        }:
+            normalized_operation = ChangeOperation.UPDATE
+            if change.field == "location":
+                normalized_value = ""
+            elif change.field in {"basic_info", "name", "description.hint"}:
+                normalized_value = ""
+            logger.info(
+                "检测到标量DELETE，已收敛为UPDATE: %s.%s",
+                resolved_id,
+                change.field,
+            )
+
+        if (
+            resolved_id == change.id
+            and normalized_operation == change.operation
+            and normalized_value == change.value
+            and normalized_field == change.field
+        ):
             return change
 
-        logger.info(f"变更ID已自动纠正: {change.id} -> {resolved_id}")
+        if resolved_id != change.id:
+            logger.info(f"变更ID已自动纠正: {change.id} -> {resolved_id}")
         return StateChange(
             id=resolved_id,
-            field=change.field,
-            operation=change.operation,
-            value=change.value,
+            field=normalized_field,
+            operation=normalized_operation,
+            value=normalized_value,
         )
 
     def _resolve_entity_id(self, raw_id: str) -> str:
@@ -1031,11 +1238,16 @@ class GameEngine:
 
         if (
             change.id == self.game_state.player_id
-            and change.operation == ChangeOperation.UPDATE
+            and change.operation in {ChangeOperation.UPDATE, ChangeOperation.MOVE}
             and change.field == "location"
-            and isinstance(change.value, str)
+            and isinstance(change.value, (str, dict))
         ):
-            self.game_state.current_scene_id = change.value
+            if isinstance(change.value, dict):
+                target = str(change.value.get("to", "") or "")
+            else:
+                target = change.value
+            if target:
+                self.game_state.current_scene_id = target
     
     def _update_entity_field(self, entity: Any, field: str, value: Any, operation: ChangeOperation):
         """按操作类型更新实体字段。"""
@@ -1054,6 +1266,18 @@ class GameEngine:
                     setattr(current, final_field, self._normalize_neighbors_value(value))
                 else:
                     setattr(current, final_field, value)
+            elif operation == ChangeOperation.MOVE:
+                if field != "location":
+                    logger.warning(f"MOVE操作仅支持location字段: {field}")
+                    return
+                if isinstance(value, dict):
+                    target_id = str(value.get("to", "") or "")
+                else:
+                    target_id = str(value or "")
+                if not target_id:
+                    logger.warning("MOVE操作缺少目标ID")
+                    return
+                setattr(current, final_field, target_id)
             elif operation == ChangeOperation.ADD:
                 if isinstance(target, list):
                     if field == "neighbors":
@@ -1205,10 +1429,20 @@ class GameEngine:
 
     def _build_dm_additional_context(self, npc_prelude_text: str = "") -> Dict[str, Any]:
         """构建DM解析用的动态上下文。"""
+        actor_id = self.game_state.player_id or ""
+        world_view = self._world_view_builder.build(self.game_state, actor_id)
+        dialogue_memory = self._dialogue_memory_builder.build(self.dm_dialogue_log)
+        narrative_memory = self._narrative_memory_builder.build(self._dump_narrative_context())
+        turn_trace_view = self._turn_trace_context_builder.build_full(self._current_turn_trace)
+
         context: Dict[str, Any] = {
             "npc_response_mode": self._npc_response_mode,
             "npc_response_policy": self._describe_npc_mode_policy(),
             "engine_context": self._build_game_context(),
+            "world_state_view": world_view.model_dump(),
+            "dialogue_memory": dialogue_memory.model_dump(),
+            "narrative_memory": narrative_memory.model_dump(),
+            "turn_trace_so_far": turn_trace_view.model_dump(),
             "action_queue": self._action_queue,
             "current_actor_id": self._current_actor_id,
             "narrative_context": self._get_narrative_context_for_llm(),
@@ -1225,9 +1459,22 @@ class GameEngine:
         npc_action_plan: Optional[Dict[str, Any]] = None,
         player_resolution_anchor: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """构建NPC推演用的动态上下文，支持queue/reactive双模式。"""
+        """构建NPC推演用的动态上下文（统一模式）。"""
+        actor_id = self._extract_npc_actor_from_plan(npc_action_plan) if npc_action_plan else None
+        if not actor_id:
+            actor_id = self._pick_default_npc_actor() or (self.game_state.player_id or "")
+
+        world_view = self._world_view_builder.build(self.game_state, actor_id)
+        dialogue_memory = self._dialogue_memory_builder.build(self.dm_dialogue_log)
+        narrative_memory = self._narrative_memory_builder.build(self._dump_narrative_context())
+        turn_trace_view = self._turn_trace_context_builder.build_for_npc(self._current_turn_trace, actor_id)
+
         context: Dict[str, Any] = {
             "engine_context": self._build_game_context(),
+            "world_state_view": world_view.model_dump(),
+            "dialogue_memory": dialogue_memory.model_dump(),
+            "narrative_memory": narrative_memory.model_dump(),
+            "turn_trace_so_far": turn_trace_view.model_dump(),
             "trigger": trigger,
             "npc_response_mode": self._npc_response_mode,
             "npc_response_policy": self._describe_npc_mode_policy(),
@@ -1334,7 +1581,7 @@ class GameEngine:
 
     def _extract_npc_action_plan(self, dm_output: DMAgentOutput) -> Optional[Dict[str, Any]]:
         """Get structured NPC action plan from NPCDirector, with DM fallback."""
-        plan = self._plan_single_npc_action(trigger="reactive", dm_output=dm_output)
+        plan = self._plan_single_npc_action(trigger="unified", dm_output=dm_output)
         if plan:
             return plan
 
@@ -1342,7 +1589,7 @@ class GameEngine:
             return {
                 "npc_id": dm_output.npc_actor_id,
                 "intent_description": dm_output.npc_intent or "",
-                "trigger_source": "reactive",
+                "trigger_source": "unified",
             }
         return None
 
@@ -1360,19 +1607,14 @@ class GameEngine:
 
     def _describe_npc_mode_policy(self) -> str:
         """返回当前NPC响应模式的策略说明，供Agent动态拼接上下文。"""
-        if self._npc_response_mode == "unified":
-            return "unified: 玩家主流程先执行，再在同回合内统一处理NPC响应；queue/reactive仅用于触发来源标签。"
-        if self._npc_response_mode == "reactive":
-            return "reactive: 玩家主流程后仅在DM判定需要响应时触发NPC。"
-        return "queue: 玩家主流程后默认触发一次NPC响应，trigger_source标记为queue。"
+        return "unified: 玩家主流程先执行，再在同回合内统一处理NPC响应。"
 
     def set_npc_response_mode(self, mode: str):
-        """设置NPC响应模式：unified(默认) / queue(语义标签) / reactive(语义标签)。"""
+        """设置NPC响应模式（已收敛为 unified）。"""
         normalized = (mode or "unified").strip().lower()
-        if normalized not in {"queue", "reactive", "unified"}:
-            logger.warning(f"未知NPC响应模式: {mode}，回退为unified")
-            normalized = "unified"
-        self._npc_response_mode = normalized
+        if normalized != "unified":
+            logger.warning("npc_response_mode '%s' 已废弃，已强制收敛为 unified", mode)
+        self._npc_response_mode = "unified"
 
     def _build_dynamic_action_queue(self, last_actor_id: Optional[str] = None) -> List[str]:
         """按可行动性与优先级动态构建行动队列。"""
@@ -1699,6 +1941,15 @@ class GameEngine:
         if not cleaned:
             return ""
 
+        if self.narrative_merger and hasattr(self.narrative_merger, "merge_v2"):
+            v2_result = self.narrative_merger.merge_v2(
+                turn_trace_steps=list(self._current_turn_trace.steps),
+                turn_truth_anchor=truth_anchor or {},
+                narrative_memory=self._narrative_memory_builder.build(self._dump_narrative_context()),
+            )
+            if v2_result and v2_result.merged_narrative:
+                return v2_result.merged_narrative.strip()
+
         if self.narrative_merger and hasattr(self.narrative_merger, "merge"):
             merged = self.narrative_merger.merge(
                 fragments=cleaned,
@@ -1716,12 +1967,13 @@ class GameEngine:
         dm_output: DMAgentOutput,
         player_check: Optional[CheckOutput],
         player_resolution_anchor: Optional[Dict[str, Any]] = None,
+        player_turn_intent: Optional[TurnIntent] = None,
     ) -> Dict[str, Any]:
         """统一后置NPC流程：玩家行动后处理NPC响应。"""
         if not hasattr(self.state_agent, "evolve_npc_action"):
             return {"game_over": False, "fragments": []}
 
-        should_trigger = self._npc_response_mode in {"queue", "unified"} or dm_output.npc_response_needed
+        should_trigger = True
         if not should_trigger:
             return {"game_over": False, "fragments": []}
 
@@ -1746,7 +1998,7 @@ class GameEngine:
         if not candidate_ids:
             return {"game_over": False, "fragments": []}
 
-        trigger_label = self._npc_response_mode if self._npc_response_mode in {"queue", "reactive"} else "unified"
+        trigger_label = "unified"
         plans = self._plan_npc_actions(
             trigger=trigger_label,
             dm_output=dm_output,
@@ -1783,6 +2035,51 @@ class GameEngine:
                     npc_action_plan=plan,
                     player_resolution_anchor=player_resolution_anchor,
                 ),
+            )
+
+            npc_intent_text = self._extract_npc_intent_from_plan(plan) or dm_output.npc_intent or "NPC响应玩家行动"
+            npc_turn_intent = TurnIntent(
+                actor_id=npc.id,
+                raw_input_text=(player_turn_intent.raw_input_text if player_turn_intent else dm_output.action_description),
+                intent_text=npc_intent_text,
+                interaction_type="action",
+                check_plan=CheckPlan(
+                    check_needed=npc_check is not None,
+                    check_type="非对抗鉴定" if npc_check is not None else None,
+                    attributes=["dex"] if npc_check is not None else None,
+                    target_id=None,
+                    difficulty="常规" if npc_check is not None else None,
+                ),
+                activation_hint=ActivationHint(
+                    response_needed_hint=True,
+                    preferred_actor_id=npc.id,
+                    npc_intent_hint=npc_intent_text,
+                    candidate_npc_ids_hint=[npc.id],
+                ),
+            )
+            npc_turn_resolution = TurnResolution(
+                actor_id=npc.id,
+                phase="npc",
+                intent_text=npc_intent_text,
+                check_result=npc_check,
+                state_changes=list(npc_output.changes or []),
+                local_narrative=npc_output.narrative or "",
+                outcome=OutcomeSummary(
+                    action_succeeded=not bool(npc_output.is_end),
+                    outcome_type="npc_response",
+                    consequence_tags=[],
+                ),
+            )
+            self._current_turn_trace.append_step(
+                TurnStep(
+                    step_id=f"turn-{self.game_state.turn_count}-npc-{npc.id}",
+                    turn_id=self.game_state.turn_count,
+                    actor_id=npc.id,
+                    phase="npc",
+                    trigger_source=trigger_label,
+                    intent=npc_turn_intent,
+                    resolution=npc_turn_resolution,
+                )
             )
 
             if npc_output.changes:

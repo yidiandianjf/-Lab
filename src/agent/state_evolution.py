@@ -70,7 +70,7 @@ STATE_EVOLUTION_OUTPUT_SCHEMA = {
                 "properties": {
                     "id": {"type": "string", "description": "实体ID"},
                     "field": {"type": "string", "description": "字段路径，支持点分如attributes.hp"},
-                    "operation": {"type": "string", "enum": ["update", "add", "del"], "description": "操作类型"},
+                    "operation": {"type": "string", "enum": ["update", "add", "del", "move"], "description": "操作类型"},
                     "value": {"type": ["string", "number", "boolean", "array", "object", "null"], "description": "新值"}
                 },
                 "required": ["id", "field", "operation"]
@@ -94,7 +94,7 @@ STATE_EVOLUTION_OUTPUT_SCHEMA = {
         },
         "erro":{
             "type":"string",
-            "description":"报错信息输出错误时返回给llm,使其纠正错误"  #修改建议:这是我新增的输入字段,记得改相关的上下游代码,使其能够正确输入
+            "description":"报错信息输出错误时返回给llm,使其纠正错误"
         }
     },
     "required": ["narrative", "changes", "resolved", "is_end"]
@@ -215,8 +215,8 @@ class StateEvolution:
         Args:
             npc_id: NPC角色ID
             game_state: 当前游戏状态
-            check_result: NPC鉴定结果（可选） #修改建议:核查一下这一部分有相关的输入吗?
-            npc_intent: NPC意图描述（可选）  #修改建议:核查一下这一部分有相关的输入吗?
+            check_result: NPC鉴定结果（可选）
+            npc_intent: NPC意图描述（可选）
             additional_context: 额外上下文信息
         
         Returns:
@@ -427,7 +427,7 @@ class StateEvolution:
         # 格式化鉴定结果
         check_text = self._format_check_result(check_result)
 
-        mode = str(game_context.get("npc_response_mode", "queue") or "queue")
+        mode = str(game_context.get("npc_response_mode", "unified") or "unified")
         policy = str(game_context.get("npc_response_policy", "") or "")
         npc_response_expected = bool(game_context.get("npc_response_expected", False))
         npc_actor_id = str(game_context.get("npc_response_actor_id", "") or "")
@@ -489,7 +489,6 @@ class StateEvolution:
             npc_id: NPC角色ID
             npc_intent: NPC意图
             game_context: 游戏上下文
-            修改建议:新增一个erro字段,用以读取系统报错,同时记得修改相关提示词,使其能够理解报错信息
         
         Returns:
             完整的提示词文本
@@ -500,8 +499,8 @@ class StateEvolution:
         # NPC意图文本
         intent_text = f"**NPC意图**: {npc_intent}\n" if npc_intent else ""
         check_text = self._format_check_result(check_result)
-        mode = str(game_context.get("npc_response_mode", "queue") or "queue")
-        trigger = str(game_context.get("trigger", "queue") or "queue")
+        mode = str(game_context.get("npc_response_mode", "unified") or "unified")
+        trigger = str(game_context.get("trigger", "unified") or "unified")
         policy = str(game_context.get("npc_response_policy", "") or "")
         player_action = str(game_context.get("player_action_description", "") or "")
         player_check = game_context.get("player_check_result")
@@ -544,8 +543,7 @@ class StateEvolution:
 ## 说明
 
 请根据NPC的性格、当前状态和情境，推演NPC的行动。
-当 mode=queue 且 trigger=queue 时：聚焦NPC前置行动，不要重复复述玩家行动。
-当 mode=reactive 且 trigger=reactive 时：将NPC行动作为对本轮玩家行动的追响应答。
+当 mode=unified 且 trigger=unified 时：将NPC行动作为同回合统一响应，不要重复复述玩家行动。
 在narrative中描述NPC的行动，在npc_action中简洁概括NPC的行动。
 返回的changes应反映NPC行动带来的状态变更。
 
@@ -911,5 +909,33 @@ class StateEvolution:
                         change.value not in game_state.maps and change.value not in game_state.characters
                     ):
                         errors.append(f"{prefix}: 物品目标位置不存在 '{change.value}'")
+            elif change.operation == ChangeOperation.MOVE:
+                if field != "location":
+                    errors.append(f"{prefix}: MOVE操作仅允许 field=location")
+                    continue
+
+                target = ""
+                source = None
+                if isinstance(change.value, str):
+                    target = change.value
+                elif isinstance(change.value, dict):
+                    target = str(change.value.get("to", "") or "")
+                    source = change.value.get("from")
+                else:
+                    errors.append(f"{prefix}: MOVE的value必须是目标ID字符串或{{from,to}}对象")
+                    continue
+
+                if not target:
+                    errors.append(f"{prefix}: MOVE缺少目标ID")
+                    continue
+
+                if entity_id.startswith("char-") and target not in game_state.maps:
+                    errors.append(f"{prefix}: 角色MOVE目标位置不存在 '{target}'")
+                if entity_id.startswith("item-") and (
+                    target not in game_state.maps and target not in game_state.characters
+                ):
+                    errors.append(f"{prefix}: 物品MOVE目标位置不存在 '{target}'")
+                if source is not None and not isinstance(source, str):
+                    errors.append(f"{prefix}: MOVE.from必须为字符串")
         
         return errors

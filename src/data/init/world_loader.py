@@ -92,7 +92,7 @@ class WorldLoader:
         return WorldBundle(
             game_state=game_state,
             world_name=self.world_name,
-            end_condition=self.manifest.get("end_condition", "玩家死亡或达成剧情结局"), #修改建议:这里出现不必要的硬编码了吗?注意核查
+            end_condition=self.manifest.get("end_condition", "玩家死亡或达成剧情结局"),
             npc_response_mode=self._resolve_npc_response_mode(),
             narrative_window=self._resolve_narrative_window(),
             npc_director_use_llm=self._resolve_bool_field("npc_director_use_llm", True),
@@ -390,8 +390,8 @@ class WorldLoader:
 
     def _resolve_npc_response_mode(self) -> str:
         configured = str(self.manifest.get("npc_response_mode", "unified") or "unified").strip().lower()
-        if configured in {"queue", "reactive", "unified"}:
-            return configured
+        if configured != "unified":
+            print(f"[WorldLoader] npc_response_mode '{configured}' 已废弃，已收敛为 unified")
         return "unified"
 
     def _resolve_narrative_window(self) -> int:

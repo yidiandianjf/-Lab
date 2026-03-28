@@ -52,7 +52,7 @@ class NPCActionForm(BaseModel):
     check: NPCCheckPlan = Field(default_factory=NPCCheckPlan)
     trigger_source: str = Field(
         default="",
-        description="queue/reactive or other pipeline trigger source",
+        description="pipeline trigger source (unified)",
     )
     metadata: Dict[str, Any] = Field(default_factory=dict)
 

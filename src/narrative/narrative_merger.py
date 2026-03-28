@@ -7,6 +7,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.agent.llm_service import LLMService
+from src.data.models import (
+    NarrativeMergerInputV2,
+    NarrativeMergerOutputV2,
+    NarrativeMemoryView,
+    TurnStep,
+)
 
 
 class NarrativeMerger:
@@ -74,6 +80,58 @@ class NarrativeMerger:
         if not response.get("success"):
             return ""
         return str(response.get("content", "")).strip()
+
+    def merge_v2(
+        self,
+        turn_trace_steps: List[TurnStep],
+        turn_truth_anchor: Optional[Dict[str, Any]] = None,
+        narrative_memory: Optional[NarrativeMemoryView] = None,
+    ) -> NarrativeMergerOutputV2:
+        """Phase 6 merger API, returns structured output while reusing legacy merger behavior."""
+        input_v2 = NarrativeMergerInputV2(
+            turn_trace_steps=turn_trace_steps or [],
+            turn_truth_anchor=turn_truth_anchor or {},
+            narrative_memory=narrative_memory or NarrativeMemoryView(),
+        )
+
+        fragments: List[Dict[str, str]] = []
+        for step in input_v2.turn_trace_steps:
+            text = (step.resolution.local_narrative or "").strip()
+            if not text:
+                continue
+            fragments.append(
+                {
+                    "actor_id": step.actor_id,
+                    "actor_name": step.actor_id,
+                    "text": text,
+                }
+            )
+
+        merged = self.merge(
+            fragments=fragments,
+            game_state=None,
+            context="\n".join(input_v2.narrative_memory.summary_lines),
+            truth_anchor=input_v2.turn_truth_anchor,
+        )
+
+        if not merged:
+            merged = "\n".join(fragment.get("text", "") for fragment in fragments if fragment.get("text"))
+
+        new_key_facts: List[str] = []
+        for step in input_v2.turn_trace_steps:
+            if step.actor_id and step.actor_id not in new_key_facts:
+                new_key_facts.append(step.actor_id)
+
+        turn_summary = merged.strip()
+        if len(turn_summary) > 200:
+            turn_summary = turn_summary[:200].rstrip() + "..."
+
+        return NarrativeMergerOutputV2(
+            merged_narrative=merged,
+            turn_summary=turn_summary,
+            new_key_facts=new_key_facts,
+            dialogue_updates=[],
+        )
 
     def _load_default_prompt(self) -> str:
         prompt_path = Path(__file__).parent / "prompt" / "narrative_merger_prompt.md"

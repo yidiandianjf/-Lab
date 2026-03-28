@@ -4,7 +4,8 @@ COC文字冒险游戏框架 - 数据模型定义
 """
 
 import builtins
-from typing import List, Dict, Optional, Any, Union
+from datetime import datetime
+from typing import List, Dict, Optional, Any, Union, Literal
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 from enum import Enum
 
@@ -223,6 +224,7 @@ class ChangeOperation(str, Enum):
     UPDATE = "update"
     ADD = "add"
     DELETE = "del"
+    MOVE = "move"
 
 
 class StateChange(BaseModel):
@@ -259,10 +261,8 @@ class CheckResult(str, Enum):
 
 
 class NpcResponseMode(str, Enum):
-    """NPC响应模式。"""
+    """NPC响应模式（收敛后仅保留 unified）。"""
     UNIFIED = "unified"
-    QUEUE = "queue"
-    REACTIVE = "reactive"
 
 
 class CheckInput(BaseModel):
@@ -281,6 +281,160 @@ class CheckOutput(BaseModel):
     target_value: int = Field(..., description="目标值")
     actor_value: int = Field(..., description="行动者实际属性值")
     detail: str = Field(default="", description="详细说明")
+
+
+# ============================================================
+# Phase 1 新协议模型（增量引入，兼容旧链路）
+# ============================================================
+
+class CheckPlan(BaseModel):
+    """E4: 检定计划。"""
+
+    check_needed: bool = Field(default=False)
+    check_type: Optional[str] = Field(default=None)
+    attributes: Optional[List[str]] = Field(default=None)
+    target_id: Optional[str] = Field(default=None)
+    difficulty: Optional[str] = Field(default=None)
+
+
+class ActivationHint(BaseModel):
+    """NPC激活建议。"""
+
+    response_needed_hint: bool = Field(default=False)
+    preferred_actor_id: Optional[str] = Field(default=None)
+    npc_intent_hint: Optional[str] = Field(default=None)
+    candidate_npc_ids_hint: Optional[List[str]] = Field(default=None)
+
+
+class TurnIntent(BaseModel):
+    """E3: 意图解释。"""
+
+    actor_id: str = Field(...)
+    raw_input_text: str = Field(default="")
+    intent_text: str = Field(default="")
+    interaction_type: Literal["action", "dialogue", "mixed"] = Field(default="action")
+    check_plan: Optional[CheckPlan] = Field(default=None)
+    activation_hint: ActivationHint = Field(default_factory=ActivationHint)
+
+
+class OutcomeSummary(BaseModel):
+    """步骤结果摘要。"""
+
+    action_succeeded: bool = Field(default=False)
+    outcome_type: str = Field(default="")
+    consequence_tags: List[str] = Field(default_factory=list)
+
+
+class TurnResolution(BaseModel):
+    """E5: 步骤结算。"""
+
+    actor_id: str = Field(...)
+    phase: Literal["player", "npc"] = Field(default="player")
+    intent_text: str = Field(default="")
+    check_result: Optional[CheckOutput] = Field(default=None)
+    state_changes: List[StateChange] = Field(default_factory=list)
+    local_narrative: str = Field(default="")
+    outcome: OutcomeSummary = Field(default_factory=OutcomeSummary)
+
+
+class TurnStep(BaseModel):
+    """E6: 回合步骤。"""
+
+    step_id: str = Field(...)
+    turn_id: int = Field(default=0)
+    actor_id: str = Field(...)
+    phase: Literal["player", "npc"] = Field(default="player")
+    trigger_source: str = Field(default="")
+    intent: TurnIntent = Field(default_factory=lambda: TurnIntent(actor_id=""))
+    resolution: TurnResolution = Field(
+        default_factory=lambda: TurnResolution(actor_id="")
+    )
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+class TurnTrace(BaseModel):
+    """E6: 回合因果链。"""
+
+    turn_id: int = Field(default=0)
+    steps: List[TurnStep] = Field(default_factory=list)
+
+    def append_step(self, step: TurnStep) -> None:
+        self.steps.append(step)
+
+    def get_steps_for_actor(self, actor_id: str) -> List[TurnStep]:
+        return [one for one in self.steps if one.actor_id == actor_id]
+
+
+class WorldStateView(BaseModel):
+    """E1: 受控世界视图。"""
+
+    current_map: Optional[Dict[str, Any]] = Field(default=None)
+    nearby_characters: List[Dict[str, Any]] = Field(default_factory=list)
+    nearby_items: List[Dict[str, Any]] = Field(default_factory=list)
+    player_state: Optional[Dict[str, Any]] = Field(default=None)
+    available_exits: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class DialogueMemoryEntry(BaseModel):
+    """结构化对话记忆条目。"""
+
+    speaker: str = Field(default="")
+    content: str = Field(default="")
+
+
+class DialogueMemoryView(BaseModel):
+    """E8: 对话记忆视图。"""
+
+    recent_dialogues: List[DialogueMemoryEntry] = Field(default_factory=list)
+
+
+class NarrativeMemoryView(BaseModel):
+    """E8: 叙事记忆视图。"""
+
+    summary_lines: List[str] = Field(default_factory=list)
+    key_facts: List[str] = Field(default_factory=list)
+
+
+class TurnTraceView(BaseModel):
+    """E6: 面向推理侧的回合因果链视图。"""
+
+    turn_id: int = Field(default=0)
+    steps: List[TurnStep] = Field(default_factory=list)
+
+
+class NarrativeMergerInputV2(BaseModel):
+    """Phase 6: 叙事合并输入协议。"""
+
+    turn_trace_steps: List[TurnStep] = Field(default_factory=list)
+    turn_truth_anchor: Dict[str, Any] = Field(default_factory=dict)
+    narrative_memory: NarrativeMemoryView = Field(default_factory=NarrativeMemoryView)
+
+
+class NarrativeMergerOutputV2(BaseModel):
+    """Phase 6: 叙事合并输出协议。"""
+
+    merged_narrative: str = Field(default="")
+    turn_summary: str = Field(default="")
+    new_key_facts: List[str] = Field(default_factory=list)
+    dialogue_updates: List[DialogueMemoryEntry] = Field(default_factory=list)
+
+
+class TurnTraceDigest(BaseModel):
+    """Phase 7: 持久化用回合链摘要。"""
+
+    turn_id: int = Field(default=0)
+    summary: str = Field(default="")
+    actor_ids: List[str] = Field(default_factory=list)
+
+
+class PersistenceSnapshotV2(BaseModel):
+    """Phase 7: 持久化快照协议。"""
+
+    game_state: "GameState"
+    dialogue_memory: DialogueMemoryView = Field(default_factory=DialogueMemoryView)
+    narrative_memory: NarrativeMemoryView = Field(default_factory=NarrativeMemoryView)
+    recent_turn_traces: List[TurnTraceDigest] = Field(default_factory=list)
+    save_version: str = Field(default="2")
 
 
 # ============================================================
@@ -313,6 +467,13 @@ class DMAgentOutput(BaseModel):
     actionable_npcs: List[str] = Field(default_factory=list, description="建议本轮可行动NPC列表")
 
 
+class DMAgentOutputV2(BaseModel):
+    """Phase 3: 精简后的DM输出协议。"""
+
+    turn_intent: TurnIntent
+    response_to_player: Optional[str] = Field(default=None)
+
+
 # ============================================================
 # 状态推演系统模型
 # ============================================================
@@ -328,7 +489,7 @@ class StateEvolutionInput(BaseModel):
     npc_intent: Optional[str] = Field(default=None, description="NPC意图")
     npc_info: Optional[Dict[str, Any]] = Field(default=None, description="NPC信息")
     npc_response_mode: NpcResponseMode = Field(default=NpcResponseMode.UNIFIED, description="NPC响应模式")
-    trigger_source: str = Field(default="", description="触发来源：queue或reactive")
+    trigger_source: str = Field(default="unified", description="触发来源：unified")
 
 
 class StateEvolutionOutput(BaseModel):
@@ -402,9 +563,27 @@ __all__ = [
     "NpcResponseMode",
     "CheckInput",
     "CheckOutput",
+    # Phase 1 协议
+    "CheckPlan",
+    "ActivationHint",
+    "TurnIntent",
+    "OutcomeSummary",
+    "TurnResolution",
+    "TurnStep",
+    "TurnTrace",
+    "WorldStateView",
+    "DialogueMemoryEntry",
+    "DialogueMemoryView",
+    "NarrativeMemoryView",
+    "TurnTraceView",
+    "NarrativeMergerInputV2",
+    "NarrativeMergerOutputV2",
+    "TurnTraceDigest",
+    "PersistenceSnapshotV2",
     # DM Agent
     "DMAgentInput",
     "DMAgentOutput",
+    "DMAgentOutputV2",
     # 状态推演
     "StateEvolutionInput",
     "StateEvolutionOutput",

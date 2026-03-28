@@ -67,8 +67,8 @@
 
 - **update**: 更新字段值（最常用）
 - **add**: 向列表添加元素
-- **del**: 删除字段或列表元素
-修改建议:新增Move字段,并附上使用说明,此字段用以移动人物和物品,同时配套代码支持提供id(检查只能是物品和人物Id)和fromto就能移动物品,防止llm自己通过add和del更改出现问题
+- **del**: 仅用于白名单列表字段中的元素删除，不允许删除模型字段本身
+- **move**: 高阶移动操作（仅 `field=location`），value可为目标ID字符串或`{"from":"...","to":"..."}`
 
 ### 常用变更字段示例
 
@@ -77,12 +77,12 @@
 {"id": "char-player-01", "field": "status.hp", "operation": "update", "value": 5}
 {"id": "char-player-01", "field": "status.san", "operation": "update", "value": 45}
 {"id": "char-player-01", "field": "location", "operation": "update", "value": "map-room-corridor-01"}
-{"id": "char-player-01", "field": "inventory", "operation": "add", "value": "item-key-01"}
-{"id": "char-player-01", "field": "inventory", "operation": "del", "value": "item-lantern-01"}
 {"id": "char-player-01", "field": "description.public", "operation": "add", "value": {"description": "左臂受了轻伤"}}
 
 // 物品状态变更
 {"id": "item-key-01", "field": "location", "operation": "update", "value": "char-guard-01"}
+{"id": "item-key-01", "field": "location", "operation": "move", "value": "char-guard-01"}
+{"id": "item-key-01", "field": "location", "operation": "move", "value": {"from": "map-room-library-01", "to": "char-guard-01"}}
 {"id": "item-book-01", "field": "description.public", "operation": "add", "value": {"description": "封面上多了新鲜的抓痕"}} 
 
 // 地图实体变更（添加角色到地图）
@@ -132,23 +132,22 @@
 5. **效果合理** :npc产生的变更列表中的效果应该合理
 6. **模拟鉴定**：无法直接调用鉴定系统时，需按情境合理估计行动效果
 
-### 双模式触发语义（动态拼接）
+### 统一模式触发语义（动态拼接）
 
 你会在NPC任务中接收到运行时字段：
-- mode: `queue` 或 `reactive`
-- trigger: `queue` 或 `reactive`
+- mode: `unified`
+- trigger: `unified`
 - policy: 当前模式策略文本
-- 本轮玩家行动/检定（仅reactive常见）
+- 本轮玩家行动/检定
 
 你在玩家行动任务中也可能接收到运行时字段：
-- mode: `queue` 或 `reactive`
+- mode: `unified`
 - npc_response_expected: `true/false`（本轮是否预计还有NPC追响应答）
 - npc_response_actor_id: 预计响应的NPC ID（可空）
 
 行为约束：
-- mode=queue 且 trigger=queue：将NPC行动视为玩家输入前置环节，避免重复玩家行动叙事。
-- mode=reactive 且 trigger=reactive：将NPC行动视为对本轮玩家行动的回应，可引用玩家行动上下文。
-- 玩家行动任务下，若 mode=reactive 且 npc_response_expected=true：
+- mode=unified 且 trigger=unified：将NPC行动视为同回合统一响应，可引用玩家行动上下文。
+- 玩家行动任务下，若 mode=unified 且 npc_response_expected=true：
   - narrative 只描述玩家尝试与即时环境反馈，不替NPC做最终同意/拒绝结论。
   - 避免生成完整NPC对话收束（例如“NPC最终允许/拒绝”）；该收束留给后续NPC响应任务。
   - changes 仅输出本阶段可确定的变更，避免写入依赖NPC最终决定的状态。
@@ -190,7 +189,7 @@
 3. **完整性**：不要遗漏明显的状态变更（如受伤后HP减少）
 4. **渐进性**：保持SAN损失和HP损失的渐进性，除非是致命攻击
 5. **线索管理**：新发现的信息可以通过`description.public`添加；它在实体里始终是列表，输出时只追加单条公开描述，不要把整个字段改写成字典
-6. **物品管理**：物品转移时要同时更新原持有者和新持有者的inventory
+6. **物品管理**：物品转移优先修改 `item.location`，inventory 与地图实体关系由代码层自动维护，不要同时手动改写双方 inventory
 7. **ID约束**：changes中所有id和value里引用的实体ID必须来自当前上下文中已存在的实体
 8. **位置约束**：角色location只能更新到已存在的地图ID
 9. **简表单优先**：优先输出最小必要字段（id/field/operation/value），不要发明额外字段
@@ -219,7 +218,7 @@
 {
   "narrative": "你在积满灰尘的书架间仔细搜寻，手指划过一排排发霉的书脊。突然，一本厚重的《死灵之书》引起了你的注意——它的书脊上有一道不自然的磨损痕迹。你小心地将其抽出，发现书页间夹着一张泛黄的羊皮纸，上面记载着关于'深潜者'的古老仪式。羊皮纸的边缘有烧灼的痕迹，似乎曾经的主人急于销毁它。",
   "changes": [
-    {"id": "char-player-01", "field": "inventory", "operation": "add", "value": "item-book-01"}
+    {"id": "item-book-01", "field": "location", "operation": "update", "value": "char-player-01"}
   ],
   "resolved": true,
   "next_action_hint": "玩家可以选择阅读羊皮纸，或者继续搜索图书馆。",
@@ -280,3 +279,7 @@
 4. 当 `npc_response_expected=true` 时，`narrative` 只能描述本轮已发生的确定事实，不要抢写 NPC 最终结论或替对方下定论。
 5. `changes` 只能包含当前这一步已经确定的状态变更，不能把后续 NPC 响应才能决定的结果提前写死。
 6. 如果存在 `check_result`、`player_resolution_anchor` 或类似锚点，`narrative` 与 `changes` 必须严格服从这些锚点，不得改写胜负与成败事实。
+7. 当使用 `move` 操作时：
+  - 仅允许 `field=location`
+  - `value` 必须是目标ID字符串，或带 `to` 键的对象
+  - 不要同时再输出同一实体的 `location update` 重复变更

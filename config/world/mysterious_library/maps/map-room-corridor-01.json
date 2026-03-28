@@ -18,7 +18,9 @@
     }
   ],
   "entities": {
-    "characters": [],
+    "characters": [
+      "char-guard-01"
+    ],
     "items": []
   }
 }

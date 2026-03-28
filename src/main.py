@@ -62,7 +62,7 @@ def parse_arguments():
         "--name", "-n",
         type=str,
         default=None,
-        help="玩家角色名称（已废弃，默认读取世界配置中的玩家定义）" #修改建议:用不到就不要留在这里,不要留在这里了
+        help="玩家角色名称（已废弃，默认读取世界配置中的玩家定义）"
     )
     
     parser.add_argument(

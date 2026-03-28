@@ -955,7 +955,7 @@ class RegressionFlowTests(unittest.TestCase):
         self.assertTrue((result.get("narrative") or "").strip())
         self.assertGreaterEqual(state_agent.npc_calls, 1)
 
-    def test_reactive_mode_skips_queue_prelude_when_npc_first(self):
+    def test_unified_mode_still_processes_npc_when_dm_does_not_request_explicit_response(self):
         bundle = load_initial_world_bundle(FakeIO(), player_name="娴嬭瘯鑰?", world_name="mysterious_library")
 
         state_agent = TriggerAwareStateAgent()
@@ -972,9 +972,9 @@ class RegressionFlowTests(unittest.TestCase):
         result = engine.process_input("鎴戞鏌ラ棬閿?")
 
         self.assertTrue(result["success"])
-        self.assertEqual(state_agent.npc_calls, 0)
+        self.assertGreaterEqual(state_agent.npc_calls, 1)
 
-    def test_queue_mode_marks_npc_trigger_as_queue(self):
+    def test_unified_mode_marks_npc_trigger_as_unified_for_legacy_queue_input(self):
         bundle = load_initial_world_bundle(FakeIO(), player_name="娴嬭瘯鑰?", world_name="mysterious_library")
 
         state_agent = TriggerAwareStateAgent()
@@ -992,9 +992,9 @@ class RegressionFlowTests(unittest.TestCase):
 
         self.assertTrue(result["success"])
         self.assertGreaterEqual(state_agent.npc_calls, 1)
-        self.assertIn("queue", state_agent.triggers)
+        self.assertIn("unified", state_agent.triggers)
 
-    def test_reactive_mode_marks_npc_trigger_as_reactive(self):
+    def test_unified_mode_marks_npc_trigger_as_unified_for_legacy_reactive_input(self):
         bundle = load_initial_world_bundle(FakeIO(), player_name="娴嬭瘯鑰?", world_name="mysterious_library")
 
         state_agent = TriggerAwareStateAgent()
@@ -1011,7 +1011,40 @@ class RegressionFlowTests(unittest.TestCase):
 
         self.assertTrue(result["success"])
         self.assertGreaterEqual(state_agent.npc_calls, 1)
-        self.assertIn("reactive", state_agent.triggers)
+        self.assertIn("unified", state_agent.triggers)
+
+    def test_move_operation_moves_item_and_syncs_relationships(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            io = IOSystem(db_path=tmp_dir, mode="json")
+
+            player = Character(id="char-player-01", name="测试者", is_player=True)
+            guard = Character(id="char-guard-01", name="守卫")
+            room = Map(id="map-room-01", name="房间")
+            key = Item(id="item-key-01", name="钥匙", location="char-guard-01")
+            guard.inventory.append("item-key-01")
+
+            self.assertEqual(io.save_character(player), ERROR_SUCCESS)
+            self.assertEqual(io.save_character(guard), ERROR_SUCCESS)
+            self.assertEqual(io.save_map(room), ERROR_SUCCESS)
+            self.assertEqual(io.save_item(key), ERROR_SUCCESS)
+
+            move_change = StateChange(
+                id="item-key-01",
+                field="location",
+                operation=ChangeOperation.MOVE,
+                value={"from": "char-guard-01", "to": "char-player-01"},
+            )
+            self.assertEqual(io.apply_state_change(move_change), ERROR_SUCCESS)
+
+            reloaded_guard = io.get_character("char-guard-01")
+            reloaded_player = io.get_character("char-player-01")
+            reloaded_key = io.get_item("item-key-01")
+            self.assertIsNotNone(reloaded_guard)
+            self.assertIsNotNone(reloaded_player)
+            self.assertIsNotNone(reloaded_key)
+            self.assertNotIn("item-key-01", reloaded_guard.inventory)
+            self.assertIn("item-key-01", reloaded_player.inventory)
+            self.assertEqual(reloaded_key.location, "char-player-01")
 
     def test_dialogue_can_still_trigger_npc_response(self):
         bundle = load_initial_world_bundle(FakeIO(), player_name="娴嬭瘯鑰?", world_name="mysterious_library")
@@ -1172,6 +1205,25 @@ class RegressionFlowTests(unittest.TestCase):
                 io._session.close()
             if hasattr(io, "engine"):
                 io.engine.dispose()
+
+    def test_normalize_state_change_coerces_scalar_delete_to_update(self):
+        engine = GameEngine(
+            io_system=FakeIO(),
+            dm_agent=DummyDMAgent(),
+            state_agent=DummyStateAgent(),
+        )
+        normalized = engine._normalize_state_change(
+            StateChange(
+                id="item-key-01",
+                field="location",
+                operation=ChangeOperation.DELETE,
+                value=None,
+            )
+        )
+
+        self.assertEqual(normalized.operation, ChangeOperation.UPDATE)
+        self.assertEqual(normalized.field, "location")
+        self.assertEqual(normalized.value, "")
 
 if __name__ == "__main__":
     unittest.main()

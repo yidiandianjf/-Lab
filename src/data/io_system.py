@@ -741,6 +741,8 @@ class IOSystem:
                 return self._do_add(entity, change.field, change.value, saver)
             elif change.operation == ChangeOperation.DELETE:
                 return self._do_delete(entity, change.field, change.value, saver)
+            elif change.operation == ChangeOperation.MOVE:
+                return self._do_move(entity, change.field, change.value)
             else:
                 return ERROR_OPERATION_INVALID
                 
@@ -794,6 +796,45 @@ class IOSystem:
         
         result = saver(entity)
         return result if result is not None else ERROR_SUCCESS
+
+    def _extract_move_target(self, value: Any) -> tuple[Optional[str], Optional[str]]:
+        """Extract move target and optional source from move payload."""
+        if isinstance(value, str):
+            return value.strip(), None
+        if isinstance(value, dict):
+            to_value = value.get("to")
+            from_value = value.get("from")
+            target = str(to_value).strip() if isinstance(to_value, str) else ""
+            source = str(from_value).strip() if isinstance(from_value, str) else None
+            return target, source
+        return "", None
+
+    def _do_move(self, entity: Any, field: str, value: Any) -> int:
+        """执行移动操作（角色或物品）。"""
+        if field != "location":
+            return ERROR_OPERATION_INVALID
+
+        target_id, source_id = self._extract_move_target(value)
+        if not target_id:
+            return ERROR_OPERATION_INVALID
+
+        if isinstance(entity, Character):
+            if source_id and entity.location != source_id:
+                return ERROR_OPERATION_INVALID
+            if not self.get_map(target_id):
+                return ERROR_ID_NOT_FOUND
+            entity.location = target_id
+            return self.save_character(entity)
+
+        if isinstance(entity, Item):
+            if source_id and entity.location != source_id:
+                return ERROR_OPERATION_INVALID
+            if not self.get_character(target_id) and not self.get_map(target_id):
+                return ERROR_ID_NOT_FOUND
+            entity.location = target_id
+            return self._save_item_with_relationship_sync(entity)
+
+        return ERROR_OPERATION_INVALID
     
     def _do_add(self, entity: Any, field: str, value: Any, saver) -> int:
         """执行添加操作（向数组添加元素）"""
