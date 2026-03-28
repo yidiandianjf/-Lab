@@ -84,11 +84,14 @@
   "check_type": "非对抗鉴定",
   "check_attributes": ["", "int"],
   "check_target": null,
-  "difficulty": "常规",
-  "action_description": "玩家试图仔细检查房间，寻找隐藏的线索或物品",
-  "npc_response_needed": false,
+  "difficulty": "",#提供所有可选项
+  "action_description": "",#描述而非提供信息
+  ---
+  #修改建议:交给npcDirector来判断:
+  "npc_response_needed": false,  
   "npc_actor_id": null,
   "npc_intent": null,
+  ---
   "actionable_npcs": [],
   "erro": ""
 }

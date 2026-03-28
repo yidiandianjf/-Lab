@@ -6,7 +6,7 @@ Game Engine核心模块 - 游戏引擎主类
 - 回合循环（7步流程）
 - 协调各模块工作
 
-参考spec_v2_simplified.md第6.1节的完整游戏流程
+
 """
 
 import logging

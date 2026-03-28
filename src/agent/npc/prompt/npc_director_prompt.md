@@ -44,7 +44,7 @@
 
 ## 约束
 - 只能给输入中的 npc_ids 生成行动
-- hp<=0 或 san<=0 的角色不能行动
+- hp<=0 或 san<=0 的角色不能行动 
 - action_type 必须使用枚举值
 - 不要输出 JSON 以外内容
 - 必须以 PlayerResolutionAnchor 为事实锚点：不能改写玩家检定胜负结论

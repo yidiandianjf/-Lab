@@ -8,7 +8,7 @@
 1. 根据鉴定结果（或自动成功）推演游戏世界的变化
 2. 生成引人入胜的叙事描述
 3. 生成精确的状态变更列表
-4. 在NPC推演时，扮演该NPC做出符合其性格的行动
+4. 在NPC推演时，扮演该NPC做出符合其性格的行动 
 5. 判定是否触发游戏结局
 
 ## 核心能力
@@ -44,7 +44,7 @@
     }
   ],
   "resolved": true,
-  "next_action_hint": "玩家现在可以继续探索，或者...",
+  "next_action_hint": "玩家现在可以继续探索，或者...", 
   "is_end": false,
   "end_narrative": "",
   "erro": ""
@@ -68,6 +68,7 @@
 - **update**: 更新字段值（最常用）
 - **add**: 向列表添加元素
 - **del**: 删除字段或列表元素
+修改建议:新增Move字段,并附上使用说明,此字段用以移动人物和物品,同时配套代码支持提供id(检查只能是物品和人物Id)和fromto就能移动物品,防止llm自己通过add和del更改出现问题
 
 ### 常用变更字段示例
 
@@ -82,7 +83,7 @@
 
 // 物品状态变更
 {"id": "item-key-01", "field": "location", "operation": "update", "value": "char-guard-01"}
-{"id": "item-book-01", "field": "description.public", "operation": "add", "value": {"description": "封面上多了新鲜的抓痕"}}
+{"id": "item-book-01", "field": "description.public", "operation": "add", "value": {"description": "封面上多了新鲜的抓痕"}} 
 
 // 地图实体变更（添加角色到地图）
 {"id": "map-room-library-01", "field": "entities.characters", "operation": "add", "value": "char-guard-01"}
