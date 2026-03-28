@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from src.agent.llm_service import LLMService
 from src.data.models import (
+    LLMRequestEnvelopeV2,
     NarrativeMergerInputV2,
     NarrativeMergerOutputV2,
     NarrativeMemoryView,
@@ -17,6 +18,38 @@ from src.data.models import (
 
 class NarrativeMerger:
     """LLM-backed narrative merger with deterministic fallback."""
+
+    OUTPUT_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "schema_version": {"type": "string"},
+            "request_id": {"type": "string"},
+            "result": {
+                "type": "object",
+                "properties": {
+                    "merged_narrative": {"type": "string"},
+                    "turn_summary": {"type": "string"},
+                    "new_key_facts": {"type": "array", "items": {"type": "string"}},
+                    "dialogue_updates": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "speaker": {"type": "string"},
+                                "content": {"type": "string"},
+                            },
+                            "required": ["speaker", "content"],
+                        },
+                    },
+                },
+                "required": ["merged_narrative", "turn_summary", "new_key_facts", "dialogue_updates"],
+            },
+            "erro": {"type": "string"},
+            "warnings": {"type": "array", "items": {"type": "string"}},
+            "extensions": {"type": "object"},
+        },
+        "required": ["schema_version", "request_id", "result"],
+    }
 
     def __init__(
         self,
@@ -63,19 +96,43 @@ class NarrativeMerger:
         context: str,
         truth_anchor: Dict[str, Any],
     ) -> str:
-        payload = {
-            "turn_count": getattr(game_state, "turn_count", 0) if game_state else 0,
-            "current_scene_id": getattr(game_state, "current_scene_id", "") if game_state else "",
-            "fragments": fragments,
-            "context": context,
-            "truth_anchor": truth_anchor,
-        }
-
+        request = LLMRequestEnvelopeV2(
+            request_id=f"turn-{getattr(game_state, 'turn_count', 0) if game_state else 0}-merge-legacy",
+            turn_id=(getattr(game_state, "turn_count", 0) if game_state else 0),
+            phase="narrative_merge",
+            payload={
+                "turn_trace_steps": [
+                    {
+                        "step_id": f"legacy-{idx}",
+                        "turn_id": (getattr(game_state, "turn_count", 0) if game_state else 0),
+                        "actor_id": str(one.get("actor_id", "")),
+                        "phase": "npc",
+                        "trigger_source": "legacy",
+                        "intent": {"actor_id": str(one.get("actor_id", ""))},
+                        "resolution": {"actor_id": str(one.get("actor_id", "")), "phase": "npc", "local_narrative": str(one.get("text", ""))},
+                    }
+                    for idx, one in enumerate(fragments)
+                ],
+                "turn_truth_anchor": truth_anchor,
+                "narrative_memory": {"summary_lines": [context] if context else [], "key_facts": [], "stable_facts": []},
+                "dialogue_memory": {"recent_dialogues": []},
+            },
+            constraints={"rules": {"must_preserve_turn_truth_anchor": True, "must_not_invent_new_state_change": True}},
+            memory_policy={"summary_write_back_required": True, "key_fact_write_back_required": True},
+        )
         prompt = (
             f"{self.system_prompt}\n\n"
-            "## 合并输入(JSON)\n"
-            f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+            "## 请求 JSON\n"
+            f"{json.dumps(request.model_dump(mode='json'), ensure_ascii=False, indent=2)}"
         )
+
+        if hasattr(self.llm_service, "call_llm_json"):
+            response = self.llm_service.call_llm_json(prompt=prompt, schema=self.OUTPUT_SCHEMA)
+            if response.get("success"):
+                data = response.get("data") or {}
+                result = data.get("result") or {}
+                return str(result.get("merged_narrative", "")).strip()
+
         response = self.llm_service.call_llm(prompt)
         if not response.get("success"):
             return ""
@@ -107,13 +164,51 @@ class NarrativeMerger:
                 }
             )
 
+        if self.llm_service and fragments:
+            request = LLMRequestEnvelopeV2(
+                request_id=f"turn-{(input_v2.turn_trace_steps[0].turn_id if input_v2.turn_trace_steps else 0)}-merge",
+                turn_id=(input_v2.turn_trace_steps[0].turn_id if input_v2.turn_trace_steps else 0),
+                phase="narrative_merge",
+                payload={
+                    "turn_trace_steps": [step.model_dump(mode="json") for step in input_v2.turn_trace_steps],
+                    "turn_truth_anchor": input_v2.turn_truth_anchor,
+                    "narrative_memory": input_v2.narrative_memory.model_dump(),
+                    "dialogue_memory": {"recent_dialogues": []},
+                },
+                constraints={
+                    "rules": {
+                        "must_preserve_turn_truth_anchor": True,
+                        "must_not_invent_new_state_change": True,
+                        "max_merged_narrative_chars": 1000,
+                    }
+                },
+                memory_policy={
+                    "summary_write_back_required": True,
+                    "key_fact_write_back_required": True,
+                },
+            )
+            prompt = (
+                f"{self.system_prompt}\n\n"
+                "## 请求 JSON\n"
+                f"{json.dumps(request.model_dump(mode='json'), ensure_ascii=False, indent=2)}"
+            )
+            response = self.llm_service.call_llm_json(prompt=prompt, schema=self.OUTPUT_SCHEMA)
+            if response.get("success"):
+                data = response.get("data") or {}
+                result = data.get("result") or {}
+                return NarrativeMergerOutputV2(
+                    merged_narrative=str(result.get("merged_narrative", "")).strip(),
+                    turn_summary=str(result.get("turn_summary", "")).strip(),
+                    new_key_facts=[str(one) for one in result.get("new_key_facts", []) if str(one).strip()],
+                    dialogue_updates=list(result.get("dialogue_updates", [])),
+                )
+
         merged = self.merge(
             fragments=fragments,
             game_state=None,
             context="\n".join(input_v2.narrative_memory.summary_lines),
             truth_anchor=input_v2.turn_truth_anchor,
         )
-
         if not merged:
             merged = "\n".join(fragment.get("text", "") for fragment in fragments if fragment.get("text"))
 
@@ -126,12 +221,7 @@ class NarrativeMerger:
         if len(turn_summary) > 200:
             turn_summary = turn_summary[:200].rstrip() + "..."
 
-        return NarrativeMergerOutputV2(
-            merged_narrative=merged,
-            turn_summary=turn_summary,
-            new_key_facts=new_key_facts,
-            dialogue_updates=[],
-        )
+        return NarrativeMergerOutputV2(merged_narrative=merged, turn_summary=turn_summary, new_key_facts=new_key_facts, dialogue_updates=[])
 
     def _load_default_prompt(self) -> str:
         prompt_path = Path(__file__).parent / "prompt" / "narrative_merger_prompt.md"

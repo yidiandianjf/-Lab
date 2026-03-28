@@ -53,17 +53,32 @@ class LLMJsonRetryTests(unittest.TestCase):
                 return {
                     "success": True,
                     "data": {
-                        "is_dialogue": False,
-                        "response_to_player": "",
-                        "needs_check": False,
-                        "check_type": None,
-                        "check_attributes": [],
-                        "check_target": None,
-                        "difficulty": "常规",
-                        "action_description": "测试",
-                        "npc_response_needed": False,
-                        "npc_actor_id": None,
-                        "npc_intent": None,
+                        "schema_version": "2.0",
+                        "request_id": "turn-0-player-parse",
+                        "result": {
+                            "turn_intent": {
+                                "actor_id": "char-player-01",
+                                "raw_input_text": "测试输入",
+                                "intent_text": "测试",
+                                "interaction_type": "action",
+                                "check_plan": {
+                                    "check_needed": False,
+                                    "check_type": None,
+                                    "attributes": [],
+                                    "target_id": None,
+                                    "difficulty": None
+                                },
+                                "activation_hint": {
+                                    "response_needed_hint": False,
+                                    "preferred_actor_id": None,
+                                    "candidate_npc_ids_hint": []
+                                }
+                            },
+                            "response_to_player": None
+                        },
+                        "erro": "",
+                        "warnings": [],
+                        "extensions": {}
                     },
                     "content": "",
                     "model": "fake",
@@ -84,12 +99,24 @@ class LLMJsonRetryTests(unittest.TestCase):
                 return {
                     "success": True,
                     "data": {
-                        "narrative": "测试叙事",
-                        "changes": [],
-                        "resolved": True,
-                        "next_action_hint": None,
-                        "is_end": False,
-                        "end_narrative": "",
+                        "schema_version": "2.0",
+                        "request_id": "turn-0-player-evolve",
+                        "result": {
+                            "actor_id": "char-player-01",
+                            "phase": "player",
+                            "intent_text": "观察",
+                            "check_result": None,
+                            "state_changes": [],
+                            "local_narrative": "测试叙事",
+                            "outcome": {
+                                "action_succeeded": True,
+                                "outcome_type": "player_action",
+                                "consequence_tags": []
+                            }
+                        },
+                        "erro": "",
+                        "warnings": [],
+                        "extensions": {}
                     },
                     "content": "",
                     "model": "fake",

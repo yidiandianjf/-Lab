@@ -17,19 +17,31 @@ class FakeLLMService:
             return {
                 "success": True,
                 "data": {
-                    "narrative": "第一次输出，包含错误ID。",
-                    "changes": [
-                        {
-                            "id": "bad-id",
-                            "field": "status.hp",
-                            "operation": "update",
-                            "value": 8,
+                    "schema_version": "2.0",
+                    "request_id": "turn-0-player-evolve",
+                    "result": {
+                        "actor_id": "char-player-01",
+                        "phase": "player",
+                        "intent_text": "尝试包扎伤口",
+                        "check_result": None,
+                        "state_changes": [
+                            {
+                                "id": "bad-id",
+                                "field": "status.hp",
+                                "operation": "update",
+                                "value": 8,
+                            }
+                        ],
+                        "local_narrative": "第一次输出，包含错误ID。",
+                        "outcome": {
+                            "action_succeeded": True,
+                            "outcome_type": "player_action",
+                            "consequence_tags": []
                         }
-                    ],
-                    "resolved": True,
-                    "is_end": False,
-                    "end_narrative": "",
+                    },
                     "erro": "实体ID不存在",
+                    "warnings": [],
+                    "extensions": {}
                 },
                 "content": "",
                 "model": "fake",
@@ -39,18 +51,31 @@ class FakeLLMService:
         return {
             "success": True,
             "data": {
-                "narrative": "第二次输出，已修正。",
-                "changes": [
-                    {
-                        "id": "char-player-01",
-                        "field": "status.hp",
-                        "operation": "update",
-                        "value": 8,
+                "schema_version": "2.0",
+                "request_id": "turn-0-player-evolve",
+                "result": {
+                    "actor_id": "char-player-01",
+                    "phase": "player",
+                    "intent_text": "尝试包扎伤口",
+                    "check_result": None,
+                    "state_changes": [
+                        {
+                            "id": "char-player-01",
+                            "field": "status.hp",
+                            "operation": "update",
+                            "value": 8,
+                        }
+                    ],
+                    "local_narrative": "第二次输出，已修正。",
+                    "outcome": {
+                        "action_succeeded": True,
+                        "outcome_type": "player_action",
+                        "consequence_tags": []
                     }
-                ],
-                "resolved": True,
-                "is_end": False,
-                "end_narrative": "",
+                },
+                "erro": "",
+                "warnings": [],
+                "extensions": {}
             },
             "content": "",
             "model": "fake",

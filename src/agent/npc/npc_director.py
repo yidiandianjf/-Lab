@@ -7,7 +7,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from src.agent.llm_service import LLMService
-from src.data.models import DMAgentOutput, GameState
+from src.data.models import DMAgentOutput, GameState, LLMRequestEnvelopeV2
 from src.data.npc_planning_models import NPCActionDecision, NPCActionForm, NPCActionType
 
 from .prompt_loader import load_npc_director_prompt
@@ -18,44 +18,55 @@ logger = logging.getLogger(__name__)
 NPC_DIRECTOR_OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
-        "actions": {
+        "schema_version": {"type": "string"},
+        "request_id": {"type": "string"},
+        "result": {
             "type": "object",
-            "additionalProperties": {
-                "type": "object",
-                "properties": {
-                    "npc_id": {"type": "string"},
-                    "action_type": {
-                        "type": "string",
-                        "enum": ["attack", "move", "talk", "use_item", "investigate", "wait", "custom"],
-                    },
-                    "target_id": {"type": ["string", "null"]},
-                    "intent_description": {"type": "string"},
-                    "expected_outcome": {"type": ["string", "null"]},
-                    "check": {
+            "properties": {
+                "actions": {
+                    "type": "object",
+                    "additionalProperties": {
                         "type": "object",
                         "properties": {
-                            "check_needed": {"type": "boolean"},
-                            "check_attributes": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                            },
-                            "difficulty": {
+                            "npc_id": {"type": "string"},
+                            "action_type": {
                                 "type": "string",
-                                "enum": ["regular", "hard", "extreme"],
+                                "enum": ["attack", "move", "talk", "use_item", "investigate", "wait", "custom"],
                             },
-                            "check_target_id": {"type": ["string", "null"]},
+                            "target_id": {"type": ["string", "null"]},
+                            "intent_description": {"type": "string"},
+                            "expected_outcome": {"type": ["string", "null"]},
+                            "check": {
+                                "type": "object",
+                                "properties": {
+                                    "check_needed": {"type": "boolean"},
+                                    "check_attributes": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                    },
+                                    "difficulty": {
+                                        "type": "string",
+                                        "enum": ["常规", "困难", "极难"],
+                                    },
+                                    "check_target_id": {"type": ["string", "null"]},
+                                },
+                                "required": ["check_needed", "check_attributes", "difficulty"],
+                            },
+                            "trigger_source": {"type": "string"},
+                            "metadata": {"type": "object"},
                         },
-                        "required": ["check_needed", "check_attributes", "difficulty"],
+                        "required": ["npc_id", "action_type", "intent_description", "check", "trigger_source"],
                     },
-                    "trigger_source": {"type": "string"},
-                    "metadata": {"type": "object"},
                 },
-                "required": ["npc_id", "action_type", "intent_description", "check", "trigger_source"],
+                "rationale": {"type": "string"},
             },
+            "required": ["actions"],
         },
-        "rationale": {"type": "string"},
+        "erro": {"type": "string"},
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "extensions": {"type": "object"},
     },
-    "required": ["actions"],
+    "required": ["schema_version", "request_id", "result"],
 }
 
 
@@ -123,19 +134,20 @@ class NPCDirector:
         recent_events: List[dict],
         narrative_context: str,
     ) -> Optional[NPCActionDecision]:
-        prompt = self._build_prompt(npc_ids, game_state, player_intent, trigger_source, recent_events, narrative_context)
+        request = self._build_request(npc_ids, game_state, player_intent, trigger_source, recent_events, narrative_context)
+        prompt = self._build_prompt(request)
         try:
             response = self.llm_service.call_llm_json(prompt=prompt, schema=NPC_DIRECTOR_OUTPUT_SCHEMA)
             if not response.get("success"):
                 logger.warning("NPCDirector LLM调用失败: %s", response.get("error"))
                 return None
             data = response.get("data") or {}
-            return self._parse_decision(data, npc_ids)
+            return self._parse_decision(data, npc_ids, request.request_id)
         except Exception as e:
             logger.warning("NPCDirector LLM解析失败，回退规则兜底: %s", e)
             return None
 
-    def _build_prompt(
+    def _build_request(
         self,
         npc_ids: List[str],
         game_state: GameState,
@@ -143,21 +155,56 @@ class NPCDirector:
         trigger_source: str,
         recent_events: List[dict],
         narrative_context: str,
-    ) -> str:
+    ) -> LLMRequestEnvelopeV2:
         payload = {
-            "turn_count": game_state.turn_count,
-            "player_id": game_state.player_id,
-            "npc_ids": npc_ids,
             "trigger_source": trigger_source,
-            "player_intent": player_intent.model_dump() if player_intent else None,
-            "recent_events": recent_events[-10:],
-            "narrative_context": narrative_context,
-            "npc_states": [self._serialize_npc_state(game_state, npc_id) for npc_id in npc_ids],
+            "activated_npc_ids": npc_ids,
+            "surrounding_context": {
+                "current_map": (
+                    {
+                        "id": game_state.get_current_map().id,
+                        "name": game_state.get_current_map().name,
+                        "description": game_state.get_current_map().description.get_public_text(),
+                    }
+                    if game_state.get_current_map()
+                    else None
+                ),
+                "nearby_non_activated_npcs": [],
+                "nearby_items": [],
+                "hazards": [],
+            },
+            "player_action_summary": player_intent.action_description if player_intent else "",
+            "player_turn_resolution": None,
+            "turn_trace_so_far": {"turn_id": game_state.turn_count, "steps": []},
+            "narrative_memory": {"summary_lines": [], "key_facts": [], "stable_facts": []},
+            "npc_world_views": [self._serialize_npc_state(game_state, npc_id) for npc_id in npc_ids],
         }
+        return LLMRequestEnvelopeV2(
+            request_id=f"turn-{game_state.turn_count}-npc-plan",
+            turn_id=game_state.turn_count,
+            phase="npc_planning",
+            payload=payload,
+            constraints={
+                "enums": {
+                    "mode": ["unified"],
+                    "action_type": ["attack", "move", "talk", "use_item", "investigate", "wait", "custom"],
+                    "check_difficulty": ["常规", "困难", "极难"],
+                },
+                "rules": {
+                    "must_reference_existing_ids": True,
+                    "max_actions_per_turn": 3,
+                    "avoid_npc_narrative_conflict": True,
+                },
+            },
+            memory_policy={"prefer_recent_turns": True, "must_follow_player_truth_anchor": True},
+            extensions={"recent_events": recent_events[-10:], "narrative_context": narrative_context},
+        )
+
+    def _build_prompt(self, request: LLMRequestEnvelopeV2) -> str:
         return (
             f"{self.system_prompt}\n\n"
-            "## 决策输入(JSON)\n"
-            f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+            "## 请求 JSON\n"
+            f"{json.dumps(request.model_dump(mode='json'), ensure_ascii=False, indent=2)}"
         )
 
     def _serialize_npc_state(self, game_state: GameState, npc_id: str) -> Dict[str, Any]:
@@ -174,14 +221,31 @@ class NPCDirector:
                 "san": npc.status.san,
             },
             "attributes": {
+                "str": npc.attributes.str,
+                "con": npc.attributes.con,
+                "siz": npc.attributes.siz,
                 "dex": npc.attributes.dex,
+                "app": npc.attributes.app,
                 "int": npc.attributes.int,
                 "pow": npc.attributes.pow,
+                "edu": npc.attributes.edu,
+            },
+            "basic_info": npc.basic_info,
+            "description_public": npc.description.get_public_text() if npc.description else "",
+            "description_hint": npc.description.hint if npc.description else "",
+            "memory": {
+                "current_event": npc.memory.current_event if npc.memory else "",
+                "log": list(npc.memory.log) if npc.memory else [],
             },
         }
 
-    def _parse_decision(self, data: Dict[str, Any], allowed_npc_ids: List[str]) -> NPCActionDecision:
-        raw_actions = data.get("actions") or {}
+    def _parse_decision(self, data: Dict[str, Any], allowed_npc_ids: List[str], request_id: str) -> NPCActionDecision:
+        if request_id and str(data.get("request_id", "")) not in {"", request_id}:
+            raise ValueError("request_id 不匹配")
+        result = data.get("result")
+        if not isinstance(result, dict):
+            raise ValueError("缺少 result 对象")
+        raw_actions = result.get("actions") or {}
         actions: Dict[str, NPCActionForm] = {}
         for npc_id, raw_action in raw_actions.items():
             if npc_id not in allowed_npc_ids:
@@ -192,7 +256,7 @@ class NPCDirector:
 
         return NPCActionDecision(
             actions=actions,
-            rationale=str(data.get("rationale", "")).strip(),
+            rationale=str(result.get("rationale", "")).strip(),
         )
 
     def _fallback_decision(

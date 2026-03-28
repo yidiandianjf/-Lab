@@ -446,13 +446,16 @@ class GameEngine:
                 npc_prelude_text="",
             )
             turn_intent = self._build_turn_intent_from_dm(natural_input, dm_output)
+            interaction_type = str(getattr(dm_output, "interaction_type", "action") or "action")
+            is_dialogue_turn = interaction_type in {"dialogue", "mixed"}
+            has_player_action = interaction_type in {"action", "mixed"}
             
             # 纯对话场景优先返回玩家可见回复，但如果 DM 明确要求 NPC 继续响应，
             # 仍然保留后续流程，避免把“对话”误判成“流程终止”。
-            if dm_output.is_dialogue:
+            if is_dialogue_turn:
                 result["response"] = dm_output.response_to_player
                 self._record_dm_dialogue(natural_input, dm_output.response_to_player)
-                if not dm_output.npc_response_needed:
+                if not dm_output.npc_response_needed and not has_player_action:
                     return result
             
             check_output = None
@@ -463,14 +466,14 @@ class GameEngine:
             )
 
             # ===== Step 4: 规则系统鉴定 =====
-            if dm_output.needs_check and not dm_output.is_dialogue:
+            if dm_output.needs_check and has_player_action:
                 check_output = self._execute_check(dm_output)
                 result["check_result"] = check_output
 
             # ===== Step 5: 状态推演系统 =====
             evolution_result = None
             player_turn_resolution: Optional[TurnResolution] = None
-            if not dm_output.is_dialogue:
+            if has_player_action:
                 evolution_result = self._state_evolution(
                     dm_output=dm_output,
                     check_result=check_output,
@@ -668,11 +671,9 @@ class GameEngine:
 
     def _build_turn_intent_from_dm(self, raw_input_text: str, dm_output: DMAgentOutput) -> TurnIntent:
         """Adapt legacy DM output into TurnIntent protocol object."""
-        interaction_type = "action"
-        if dm_output.is_dialogue and dm_output.needs_check:
-            interaction_type = "mixed"
-        elif dm_output.is_dialogue:
-            interaction_type = "dialogue"
+        interaction_type = str(getattr(dm_output, "interaction_type", "action") or "action")
+        if interaction_type not in {"action", "dialogue", "mixed"}:
+            interaction_type = "action"
 
         check_plan = CheckPlan(
             check_needed=bool(dm_output.needs_check),
@@ -813,113 +814,6 @@ class GameEngine:
         logger.debug(f"DM Agent解析结果: needs_check={dm_output.needs_check}")
         return dm_output
 
-    def _process_legacy_npc_response(
-        self,
-        dm_output: DMAgentOutput,
-        player_check: Optional[CheckOutput],
-    ) -> Dict[str, Any]:
-        """历史兼容入口：按DM提示触发统一响应。"""
-        if not hasattr(self.state_agent, "evolve_npc_action"):
-            return {"game_over": False, "narrative": ""}
-
-        if not dm_output.npc_response_needed:
-            return {"game_over": False, "narrative": ""}
-
-        action_plan = self._extract_npc_action_plan(dm_output)
-        npc_id = (
-            self._extract_npc_actor_from_plan(action_plan)
-            or dm_output.npc_actor_id
-            or self._pick_default_npc_actor()
-        )
-        if not npc_id:
-            logger.debug("响应模式已开启，但未找到可响应NPC")
-            return {"game_over": False, "narrative": ""}
-
-        npc = self.game_state.characters.get(npc_id)
-        if not npc or npc.is_player or not self._can_actor_act(npc):
-            return {"game_over": False, "narrative": ""}
-
-        npc_check = self._execute_npc_check(npc)
-        npc_output = self.state_agent.evolve_npc_action(
-            npc_id=npc.id,
-            game_state=self.game_state,
-            check_result=npc_check,
-            npc_intent=dm_output.npc_intent or self._extract_npc_intent_from_plan(action_plan),
-            additional_context=self._build_npc_runtime_context(
-                trigger="unified",
-                player_check=player_check,
-                player_action_description=dm_output.action_description,
-                npc_action_plan=action_plan,
-            ),
-        )
-
-        npc_intent_text = dm_output.npc_intent or self._extract_npc_intent_from_plan(action_plan) or "NPC响应玩家行动"
-        self._current_turn_trace.append_step(
-            TurnStep(
-                step_id=f"turn-{self.game_state.turn_count}-npc-{npc.id}",
-                turn_id=self.game_state.turn_count,
-                actor_id=npc.id,
-                phase="npc",
-                trigger_source="unified",
-                intent=TurnIntent(
-                    actor_id=npc.id,
-                    raw_input_text=dm_output.action_description,
-                    intent_text=npc_intent_text,
-                    interaction_type="action",
-                    check_plan=CheckPlan(
-                        check_needed=npc_check is not None,
-                        check_type="非对抗鉴定" if npc_check is not None else None,
-                        attributes=["dex"] if npc_check is not None else None,
-                        target_id=None,
-                        difficulty="常规" if npc_check is not None else None,
-                    ),
-                    activation_hint=ActivationHint(
-                        response_needed_hint=True,
-                        preferred_actor_id=npc.id,
-                        npc_intent_hint=npc_intent_text,
-                        candidate_npc_ids_hint=[npc.id],
-                    ),
-                ),
-                resolution=TurnResolution(
-                    actor_id=npc.id,
-                    phase="npc",
-                    intent_text=npc_intent_text,
-                    check_result=npc_check,
-                    state_changes=list(npc_output.changes or []),
-                    local_narrative=npc_output.narrative or "",
-                    outcome=OutcomeSummary(
-                        action_succeeded=not bool(npc_output.is_end),
-                        outcome_type="npc_response",
-                        consequence_tags=[],
-                    ),
-                ),
-            )
-        )
-
-        if npc_output.changes:
-            failures = self._apply_changes(npc_output.changes)
-            if failures:
-                return {
-                    "game_over": False,
-                    "narrative": "",
-                    "ending": "",
-                    "change_failures": failures,
-                }
-
-        if npc_output.narrative:
-            self._append_narrative_event(
-                actor_id=npc.id,
-                actor_name=npc.name,
-                text=npc_output.narrative,
-                source="npc_unified",
-            )
-
-        return {
-            "game_over": npc_output.is_end,
-            "narrative": f"[{npc.name}] {npc_output.narrative}" if npc_output.narrative else "",
-            "ending": npc_output.end_narrative,
-        }
-
     def _pick_default_npc_actor(self) -> Optional[str]:
         """在响应模式下兜底选取一个同场景可行动NPC。"""
         player = self.game_state.get_player()
@@ -1003,15 +897,11 @@ class GameEngine:
             action_description=dm_output.action_description,
             game_state=self.game_state,
             additional_context={
-                "engine_context": self._build_game_context(),
                 "world_state_view": world_view.model_dump(),
                 "dialogue_memory": dialogue_memory.model_dump(),
                 "narrative_memory": narrative_memory.model_dump(),
-                "turn_trace_so_far": turn_trace_view.model_dump(),
-                "narrative_context": self._get_narrative_context_for_llm(),
+                "turn_trace_so_far": turn_trace_view.model_dump(mode="json"),
                 "player_resolution_anchor": player_resolution_anchor or {},
-                "npc_response_mode": self._npc_response_mode,
-                "npc_response_policy": self._describe_npc_mode_policy(),
                 "npc_response_expected": bool(
                     dm_output.npc_response_needed
                 ),
@@ -1178,6 +1068,22 @@ class GameEngine:
                 change.field,
             )
 
+        # location字段容错：将自然语言地点（如“走廊”“北”）收敛为真实地图ID。
+        if (
+            change.field == "location"
+            and resolved_id in self.game_state.characters
+            and normalized_operation in {ChangeOperation.UPDATE, ChangeOperation.MOVE}
+        ):
+            if isinstance(normalized_value, dict):
+                location_value = dict(normalized_value)
+                if location_value.get("to"):
+                    location_value["to"] = self._resolve_map_id(location_value.get("to"))
+                if location_value.get("from"):
+                    location_value["from"] = self._resolve_map_id(location_value.get("from"))
+                normalized_value = location_value
+            else:
+                normalized_value = self._resolve_map_id(normalized_value)
+
         if (
             resolved_id == change.id
             and normalized_operation == change.operation
@@ -1194,6 +1100,37 @@ class GameEngine:
             operation=normalized_operation,
             value=normalized_value,
         )
+
+    def _resolve_map_id(self, raw_target: Any) -> str:
+        """将地图名/方向等模糊位置解析为真实地图ID；无法解析时返回原值。"""
+        target = str(raw_target or "").strip()
+        if not target:
+            return target
+        if target in self.game_state.maps:
+            return target
+
+        current_map = self.game_state.get_current_map()
+        if current_map:
+            for neighbor in current_map.neighbors:
+                direction = str(getattr(neighbor, "direction", "") or "").strip()
+                if target == direction:
+                    return neighbor.id
+
+        for map_id, map_obj in self.game_state.maps.items():
+            map_name = str(getattr(map_obj, "name", "") or "").strip()
+            if target == map_name:
+                return map_id
+            if map_name and map_name in target:
+                return map_id
+
+        lowered = target.lower()
+        if current_map:
+            for neighbor in current_map.neighbors:
+                desc = str(getattr(neighbor, "description", "") or "").lower()
+                if desc and lowered in desc:
+                    return neighbor.id
+
+        return target
 
     def _resolve_entity_id(self, raw_id: str) -> str:
         """将近似ID映射到当前游戏中的真实实体ID。"""
@@ -1438,14 +1375,10 @@ class GameEngine:
         context: Dict[str, Any] = {
             "npc_response_mode": self._npc_response_mode,
             "npc_response_policy": self._describe_npc_mode_policy(),
-            "engine_context": self._build_game_context(),
             "world_state_view": world_view.model_dump(),
             "dialogue_memory": dialogue_memory.model_dump(),
             "narrative_memory": narrative_memory.model_dump(),
-            "turn_trace_so_far": turn_trace_view.model_dump(),
-            "action_queue": self._action_queue,
-            "current_actor_id": self._current_actor_id,
-            "narrative_context": self._get_narrative_context_for_llm(),
+            "turn_trace_so_far": turn_trace_view.model_dump(mode="json"),
         }
         if npc_prelude_text:
             context["npc_prelude"] = npc_prelude_text
@@ -1470,17 +1403,11 @@ class GameEngine:
         turn_trace_view = self._turn_trace_context_builder.build_for_npc(self._current_turn_trace, actor_id)
 
         context: Dict[str, Any] = {
-            "engine_context": self._build_game_context(),
             "world_state_view": world_view.model_dump(),
             "dialogue_memory": dialogue_memory.model_dump(),
             "narrative_memory": narrative_memory.model_dump(),
-            "turn_trace_so_far": turn_trace_view.model_dump(),
+            "turn_trace_so_far": turn_trace_view.model_dump(mode="json"),
             "trigger": trigger,
-            "npc_response_mode": self._npc_response_mode,
-            "npc_response_policy": self._describe_npc_mode_policy(),
-            "action_queue": self._action_queue,
-            "current_actor_id": self._current_actor_id,
-            "narrative_context": self._get_narrative_context_for_llm(),
         }
         if player_check:
             context["player_check_result"] = player_check.model_dump()
@@ -1492,118 +1419,109 @@ class GameEngine:
             context["player_resolution_anchor"] = player_resolution_anchor
         return context
 
+    def _extract_npc_actor_from_plan(self, action_plan: Optional[Dict[str, Any]]) -> Optional[str]:
+        """从计划中提取NPC行动者ID。"""
+        if not isinstance(action_plan, dict):
+            return None
+        for key in ("npc_id", "actor_id", "character_id"):
+            value = action_plan.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
     def _plan_npc_actions(
         self,
         trigger: str,
-        dm_output: Optional[DMAgentOutput] = None,
         candidate_npc_ids: Optional[List[str]] = None,
+        dm_output: Optional[DMAgentOutput] = None,
         player_resolution_anchor: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Use NPCDirector as a unified planning入口，返回{npc_id: plan_dict}。"""
-        if not self.npc_director or not hasattr(self.npc_director, "decide_actions"):
+        """生成本回合NPC行动计划，优先使用NPCDirector，失败时回退到最小可执行计划。"""
+        raw_ids = list(candidate_npc_ids or [])
+        if dm_output:
+            raw_ids.extend(list(dm_output.actionable_npcs or []))
+            if dm_output.npc_actor_id:
+                raw_ids.append(dm_output.npc_actor_id)
+
+        deduped_ids: List[str] = []
+        seen = set()
+        for npc_id in raw_ids:
+            if not isinstance(npc_id, str) or not npc_id.strip():
+                continue
+            normalized = npc_id.strip()
+            if normalized in seen:
+                continue
+            actor = self.game_state.characters.get(normalized)
+            if not actor or actor.is_player or not self._can_actor_act(actor):
+                continue
+            seen.add(normalized)
+            deduped_ids.append(normalized)
+
+        if not deduped_ids:
+            fallback_npc = self._pick_default_npc_actor()
+            if fallback_npc:
+                deduped_ids = [fallback_npc]
+
+        if not deduped_ids:
             return {}
 
-        npc_ids = candidate_npc_ids or []
-        if not npc_ids and dm_output and dm_output.actionable_npcs:
-            npc_ids = [npc_id for npc_id in dm_output.actionable_npcs if npc_id in self.game_state.characters]
+        planned: Dict[str, Any] = {}
+        if self.npc_director and hasattr(self.npc_director, "decide_actions"):
+            try:
+                recent_events = list((self._dump_narrative_context() or {}).get("recent_events", []))
+                decision = self.npc_director.decide_actions(
+                    npc_ids=deduped_ids,
+                    game_state=self.game_state,
+                    player_intent=dm_output,
+                    trigger_source=trigger,
+                    recent_events=recent_events,
+                    narrative_context=self._get_narrative_context_for_llm(),
+                )
+                actions = getattr(decision, "actions", {}) or {}
+                for npc_id, action in actions.items():
+                    if npc_id not in deduped_ids:
+                        continue
+                    action_payload = action.model_dump() if hasattr(action, "model_dump") else dict(action)
+                    action_payload.setdefault("npc_id", npc_id)
+                    action_payload.setdefault("trigger_source", trigger)
+                    planned[npc_id] = action_payload
+            except Exception as e:
+                logger.warning("NPCDirector规划失败，回退最小计划: %s", e)
 
-        if not npc_ids:
-            npc_ids = [
-                char_id
-                for char_id, char in self.game_state.characters.items()
-                if not char.is_player and self._can_actor_act(char)
-            ]
+        if planned:
+            return planned
 
-        if not npc_ids:
-            return {}
-
-        recent_events = []
-        if hasattr(self.narrative_context, "recent_events"):
-            for event in getattr(self.narrative_context, "recent_events", []):
-                if hasattr(event, "model_dump"):
-                    recent_events.append(event.model_dump())
-                elif isinstance(event, dict):
-                    recent_events.append(event)
-
-        narrative_context = self._get_narrative_context_for_llm()
-        if player_resolution_anchor:
-            narrative_context = (
-                f"{narrative_context}\n\n"
-                "[PlayerResolutionAnchor]\n"
-                + json.dumps(player_resolution_anchor, ensure_ascii=False, indent=2)
-            ).strip()
-
-        decision = self.npc_director.decide_actions(
-            npc_ids=npc_ids,
-            game_state=self.game_state,
-            player_intent=dm_output,
-            trigger_source=trigger,
-            recent_events=recent_events,
-            narrative_context=narrative_context,
-        )
-
-        plans: Dict[str, Any] = {}
-        raw_actions = getattr(decision, "actions", {}) if decision else {}
-        for npc_id, action in raw_actions.items():
-            if hasattr(action, "model_dump"):
-                plans[npc_id] = action.model_dump()
-            elif isinstance(action, dict):
-                plans[npc_id] = action
-        return plans
-
-    def _plan_single_npc_action(
-        self,
-        trigger: str,
-        dm_output: Optional[DMAgentOutput],
-    ) -> Optional[Dict[str, Any]]:
-        """Plan single NPC action with director, falling back to DM fields."""
-        preferred_npc_id = dm_output.npc_actor_id if dm_output else None
-        candidate_ids: List[str] = []
-        if preferred_npc_id:
-            candidate_ids.append(preferred_npc_id)
-        else:
-            default_npc_id = self._pick_default_npc_actor()
-            if default_npc_id:
-                candidate_ids.append(default_npc_id)
-
-        plans = self._plan_npc_actions(
-            trigger=trigger,
-            dm_output=dm_output,
-            candidate_npc_ids=candidate_ids,
-        )
-
-        if preferred_npc_id and preferred_npc_id in plans:
-            return plans[preferred_npc_id]
-        if plans:
-            first_npc_id = next(iter(plans.keys()))
-            return plans[first_npc_id]
-        return None
-
-    def _extract_npc_action_plan(self, dm_output: DMAgentOutput) -> Optional[Dict[str, Any]]:
-        """Get structured NPC action plan from NPCDirector, with DM fallback."""
-        plan = self._plan_single_npc_action(trigger="unified", dm_output=dm_output)
-        if plan:
-            return plan
-
-        if dm_output.npc_actor_id or dm_output.npc_intent:
-            return {
-                "npc_id": dm_output.npc_actor_id,
-                "intent_description": dm_output.npc_intent or "",
-                "trigger_source": "unified",
+        for npc_id in deduped_ids:
+            actor = self.game_state.characters.get(npc_id)
+            if not actor:
+                continue
+            intent_text = "保持观察，等待局势变化"
+            action_type = "wait"
+            target_id = None
+            if dm_output and dm_output.npc_response_needed:
+                intent_text = dm_output.npc_intent or "回应玩家的发言与行动"
+                action_type = "talk"
+                target_id = self.game_state.player_id or None
+            planned[npc_id] = {
+                "npc_id": npc_id,
+                "action_type": action_type,
+                "target_id": target_id,
+                "intent_description": intent_text,
+                "expected_outcome": None,
+                "check": {
+                    "check_needed": False,
+                    "check_attributes": [],
+                    "difficulty": "常规",
+                    "check_target_id": None,
+                },
+                "trigger_source": trigger,
+                "metadata": {
+                    "reason": "engine_fallback_plan",
+                    "anchor": player_resolution_anchor or {},
+                },
             }
-        return None
 
-    def _extract_npc_actor_from_plan(self, action_plan: Optional[Dict[str, Any]]) -> Optional[str]:
-        """Extract npc actor id from structured plan payload."""
-        if not action_plan:
-            return None
-
-        if isinstance(action_plan, dict):
-            for key in ("npc_id", "actor_id", "character_id"):
-                value = action_plan.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
-        return None
+        return planned
 
     def _describe_npc_mode_policy(self) -> str:
         """返回当前NPC响应模式的策略说明，供Agent动态拼接上下文。"""
@@ -2027,7 +1945,7 @@ class GameEngine:
                 npc_id=npc.id,
                 game_state=self.game_state,
                 check_result=npc_check,
-                npc_intent=self._extract_npc_intent_from_plan(plan) or dm_output.npc_intent,
+                npc_intent=self._extract_npc_intent_from_plan(plan),
                 additional_context=self._build_npc_runtime_context(
                     trigger=trigger_label,
                     player_check=player_check,
@@ -2037,7 +1955,7 @@ class GameEngine:
                 ),
             )
 
-            npc_intent_text = self._extract_npc_intent_from_plan(plan) or dm_output.npc_intent or "NPC响应玩家行动"
+            npc_intent_text = self._extract_npc_intent_from_plan(plan) or "NPC响应玩家行动"
             npc_turn_intent = TurnIntent(
                 actor_id=npc.id,
                 raw_input_text=(player_turn_intent.raw_input_text if player_turn_intent else dm_output.action_description),
@@ -2053,7 +1971,7 @@ class GameEngine:
                 activation_hint=ActivationHint(
                     response_needed_hint=True,
                     preferred_actor_id=npc.id,
-                    npc_intent_hint=npc_intent_text,
+                    npc_intent_hint=None,
                     candidate_npc_ids_hint=[npc.id],
                 ),
             )

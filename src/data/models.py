@@ -393,6 +393,7 @@ class NarrativeMemoryView(BaseModel):
 
     summary_lines: List[str] = Field(default_factory=list)
     key_facts: List[str] = Field(default_factory=list)
+    stable_facts: List[str] = Field(default_factory=list)
 
 
 class TurnTraceView(BaseModel):
@@ -437,6 +438,31 @@ class PersistenceSnapshotV2(BaseModel):
     save_version: str = Field(default="2")
 
 
+class LLMRequestEnvelopeV2(BaseModel):
+    """Generic V2 request envelope for LLM-facing protocols."""
+
+    schema_version: str = Field(default="2.0")
+    request_id: str = Field(default="")
+    turn_id: int = Field(default=0)
+    phase: str = Field(default="")
+    source: str = Field(default="engine")
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    constraints: Dict[str, Any] = Field(default_factory=dict)
+    memory_policy: Dict[str, Any] = Field(default_factory=dict)
+    extensions: Dict[str, Any] = Field(default_factory=dict)
+
+
+class LLMResponseEnvelopeV2(BaseModel):
+    """Generic V2 response envelope for LLM-facing protocols."""
+
+    schema_version: str = Field(default="2.0")
+    request_id: str = Field(default="")
+    result: Dict[str, Any] = Field(default_factory=dict)
+    erro: str = Field(default="")
+    warnings: List[str] = Field(default_factory=list)
+    extensions: Dict[str, Any] = Field(default_factory=dict)
+
+
 # ============================================================
 # DM Agent 输入输出模型
 # ============================================================
@@ -453,6 +479,10 @@ class DMAgentInput(BaseModel):
 
 class DMAgentOutput(BaseModel):
     """DM Agent输出"""
+    interaction_type: Literal["action", "dialogue", "mixed"] = Field(
+        default="action",
+        description="交互类型：纯动作/纯对话/混合",
+    )
     is_dialogue: bool = Field(default=False, description="是否为纯对话")
     response_to_player: str = Field(default="", description="给玩家的回复")
     needs_check: bool = Field(default=False, description="是否需要鉴定")
@@ -580,6 +610,8 @@ __all__ = [
     "NarrativeMergerOutputV2",
     "TurnTraceDigest",
     "PersistenceSnapshotV2",
+    "LLMRequestEnvelopeV2",
+    "LLMResponseEnvelopeV2",
     # DM Agent
     "DMAgentInput",
     "DMAgentOutput",

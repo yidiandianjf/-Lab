@@ -29,91 +29,96 @@ DM Agent模块 - 意图解析与鉴定判断
 import json
 import logging
 from typing import Dict, List, Optional, Any
-from pathlib import Path
 
 from src.data.models import (
-    DMAgentInput,
     DMAgentOutput,
-    DMAgentOutputV2,
-    ActivationHint,
-    CheckPlan,
     GameState,
-    Character,
-    Map,
-    TurnIntent,
+    LLMRequestEnvelopeV2,
 )
-from src.agent.llm_service import LLMService, LLMConfig
+from src.agent.llm_service import LLMService
 from src.rule.rule_system import get_attribute_value
 
 # 配置日志
 logger = logging.getLogger(__name__)
 
-# DMAgentOutput的JSON Schema（用于LLM输出约束）
+# DMAgent V2 response schema（用于LLM输出约束）
 DMAGENT_OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
-        "is_dialogue": {
-            "type": "boolean",
-            "description": "是否为纯对话，不需要游戏机制介入"
-        },
-        "response_to_player": {
-            "type": "string",
-            "description": "如果是纯对话，直接回复玩家"
-        },
-        "needs_check": {
-            "type": "boolean",
-            "description": "是否需要鉴定（掷骰子）"
-        },
-        "check_type": {
-            "type": "string",
-            "enum": ["非对抗鉴定", "对抗鉴定"],
-            "description": "鉴定类型"
-        },
-        "check_attributes": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "相关属性/技能列表，按相关度排序"
-        },
-        "check_target": {
-            "type": ["string", "null"],
-            "description": "对抗目标ID或描述，非对抗鉴定为null"
-        },
-        "difficulty": {
-            "type": ["string", "null"],
-            "enum": ["常规", "困难", "极难", None],
-            "description": "非对抗鉴定的难度，不需要鉴定时为null"
-        },
-        "action_description": {
-            "type": "string",
-            "description": "行动的自然语言描述，用于后续叙事生成"
-        },
-        "npc_response_needed": {
-            "type": "boolean",
-            "description": "是否需要NPC在本轮对玩家行动做出响应" 
-        },
-        "npc_actor_id": {
-            "type": ["string", "null"],
-            "description": "需要响应的NPC ID，不需要时为null"
-        },
-        "npc_intent": {
-            "type": ["string", "null"],
-            "description": "NPC响应意图，供后续NPC推演使用"
-        },
-        "actionable_npcs": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "建议在本回合响应阶段可行动的NPC列表"
+        "schema_version": {"type": "string"},
+        "request_id": {"type": "string"},
+        "result": {
+            "type": "object",
+            "properties": {
+                "turn_intent": {
+                    "type": "object",
+                    "properties": {
+                        "actor_id": {"type": "string"},
+                        "raw_input_text": {"type": "string"},
+                        "intent_text": {"type": "string"},
+                        "interaction_type": {
+                            "type": "string",
+                            "enum": ["action", "dialogue", "mixed"],
+                        },
+                        "check_plan": {
+                            "type": "object",
+                            "properties": {
+                                "check_needed": {"type": "boolean"},
+                                "check_type": {
+                                    "type": ["string", "null"],
+                                    "enum": ["非对抗鉴定", "对抗鉴定", None],
+                                },
+                                "attributes": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "target_id": {"type": ["string", "null"]},
+                                "difficulty": {
+                                    "type": ["string", "null"],
+                                    "enum": ["常规", "困难", "极难", None],
+                                },
+                            },
+                            "required": ["check_needed", "attributes"],
+                        },
+                        "activation_hint": {
+                            "type": "object",
+                            "properties": {
+                                "response_needed_hint": {"type": "boolean"},
+                                "preferred_actor_id": {"type": ["string", "null"]},
+                                "candidate_npc_ids_hint": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                            },
+                            "required": ["response_needed_hint", "candidate_npc_ids_hint"],
+                        },
+                    },
+                    "required": [
+                        "actor_id",
+                        "raw_input_text",
+                        "intent_text",
+                        "interaction_type",
+                        "check_plan",
+                        "activation_hint",
+                    ],
+                },
+                "response_to_player": {
+                    "type": ["string", "null"],
+                },
+            },
+            "required": ["turn_intent", "response_to_player"],
         },
         "erro": {
             "type": "string",
             "description": "可选。系统错误反馈；若存在，需据此修正输出"
-        }
+        },
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "extensions": {"type": "object"},
     },
     "required": [
-        "is_dialogue",
-        "response_to_player",
-        "needs_check",
-        "action_description"
+        "schema_version",
+        "request_id",
+        "result",
     ]
 }
 
@@ -206,23 +211,18 @@ class DMAgent:
             >>> if result.needs_check:
             ...     print(f"需要{result.check_type}")
         """
-        # 构建游戏上下文
-        game_context = self._build_game_context(game_state)
-        
-        # 截断对话历史
         if dialogue_history:
             dialogue_history = dialogue_history[-self.max_history:]
         else:
             dialogue_history = []
-        
-        # 构建完整提示词
-        prompt = self._build_prompt(
-            system_prompt=self.system_prompt,
+
+        request = self._build_request_envelope(
             player_input=player_input,
-            game_context=game_context,
+            game_state=game_state,
             dialogue_history=dialogue_history,
-            additional_context=additional_context
+            additional_context=additional_context,
         )
+        prompt = self._build_prompt(self.system_prompt, request)
         
         error_feedback = ""
 
@@ -242,7 +242,7 @@ class DMAgent:
 
                 data = response.get("data", {})
                 try:
-                    output = self._parse_output_strict(data, player_input)
+                    output = self._parse_output_strict(data, player_input, request.request_id)
                 except Exception as parse_err:
                     llm_erro = str(data.get("erro", "")).strip()
                     error_feedback = str(parse_err)
@@ -266,49 +266,6 @@ class DMAgent:
         except Exception as e:
             logger.error(f"解析意图时发生异常: {e}")
             return self._create_fallback_output(player_input, str(e))
-
-    def parse_intent_v2(
-        self,
-        player_input: str,
-        game_state: Optional[GameState] = None,
-        dialogue_history: Optional[List[str]] = None,
-        additional_context: Optional[Dict[str, Any]] = None,
-    ) -> DMAgentOutputV2:
-        """Phase 3 adapter: emit TurnIntent-based output while reusing existing DM parsing."""
-        legacy = self.parse_intent(
-            player_input=player_input,
-            game_state=game_state,
-            dialogue_history=dialogue_history,
-            additional_context=additional_context,
-        )
-
-        interaction_type = "action"
-        if legacy.is_dialogue and legacy.needs_check:
-            interaction_type = "mixed"
-        elif legacy.is_dialogue:
-            interaction_type = "dialogue"
-
-        turn_intent = TurnIntent(
-            actor_id=(game_state.player_id if game_state and game_state.player_id else ""),
-            raw_input_text=player_input,
-            intent_text=legacy.action_description or player_input,
-            interaction_type=interaction_type,
-            check_plan=CheckPlan(
-                check_needed=bool(legacy.needs_check),
-                check_type=legacy.check_type,
-                attributes=list(legacy.check_attributes or []),
-                target_id=legacy.check_target,
-                difficulty=legacy.difficulty,
-            ),
-            activation_hint=ActivationHint(
-                response_needed_hint=bool(legacy.npc_response_needed),
-                preferred_actor_id=legacy.npc_actor_id,
-                npc_intent_hint=legacy.npc_intent,
-                candidate_npc_ids_hint=list(legacy.actionable_npcs or []),
-            ),
-        )
-        response_to_player = legacy.response_to_player if legacy.is_dialogue else None
-        return DMAgentOutputV2(turn_intent=turn_intent, response_to_player=response_to_player)
 
     def _append_error_feedback(self, prompt: str, error_feedback: str) -> str:
         """将系统错误反馈追加到Prompt，用于引导LLM纠正输出。"""
@@ -345,7 +302,7 @@ class DMAgent:
         if invalid_attrs:
             return (
                 f"check_attributes 存在规则不支持的属性: {invalid_attrs}。"
-                "当前支持: str/con/siz/dex/app/int/pow/edu/hp/san/lucky/luck"
+                "当前支持: str/con/siz/dex/app/int/pow/edu/hp/san/lucky"
             )
 
         return None
@@ -353,24 +310,40 @@ class DMAgent:
     def _parse_output_strict(
         self,
         data: Dict[str, Any],
-        original_input: str
+        original_input: str,
+        request_id: str,
     ) -> DMAgentOutput:
         """严格解析LLM输出为DMAgentOutput对象，错误将抛出给上层重试逻辑。"""
-        is_dialogue = data.get("is_dialogue", False)
+        if request_id and str(data.get("request_id", "")) not in {"", request_id}:
+            raise ValueError("request_id 不匹配")
+        result = data.get("result")
+        if not isinstance(result, dict):
+            raise ValueError("缺少 result 对象")
+        turn_intent = result.get("turn_intent") or {}
+        if not isinstance(turn_intent, dict) or not turn_intent:
+            raise ValueError("缺少 result.turn_intent")
+        check_plan = turn_intent.get("check_plan") or {}
+        activation_hint = turn_intent.get("activation_hint") or {}
+        interaction_type = str(turn_intent.get("interaction_type", "action") or "action")
+        if interaction_type not in {"action", "dialogue", "mixed"}:
+            interaction_type = "action"
+        is_dialogue = interaction_type in {"dialogue", "mixed"}
+        needs_check = bool(check_plan.get("check_needed", False))
 
         return DMAgentOutput(
+            interaction_type=interaction_type,
             is_dialogue=is_dialogue,
-            response_to_player=data.get("response_to_player", ""),
-            needs_check=data.get("needs_check", False),
-            check_type=data.get("check_type"),
-            check_attributes=data.get("check_attributes", []),
-            check_target=data.get("check_target"),
-            difficulty=data.get("difficulty", "常规"),
-            action_description=data.get("action_description", original_input),
-            npc_response_needed=data.get("npc_response_needed", False),
-            npc_actor_id=data.get("npc_actor_id"),
-            npc_intent=data.get("npc_intent"),
-            actionable_npcs=data.get("actionable_npcs", []),
+            response_to_player=result.get("response_to_player") or "",
+            needs_check=needs_check,
+            check_type=check_plan.get("check_type"),
+            check_attributes=list(check_plan.get("attributes") or []),
+            check_target=check_plan.get("target_id"),
+            difficulty=check_plan.get("difficulty", "常规"),
+            action_description=turn_intent.get("intent_text", original_input),
+            npc_response_needed=bool(activation_hint.get("response_needed_hint", False)),
+            npc_actor_id=activation_hint.get("preferred_actor_id"),
+            npc_intent=None,
+            actionable_npcs=list(activation_hint.get("candidate_npc_ids_hint") or []),
         )
     
     def _build_game_context(self, game_state: Optional[GameState]) -> Dict[str, Any]:
@@ -453,145 +426,87 @@ class DMAgent:
             }
         
         return context
-    
-    def _build_prompt(
+
+    def _build_request_envelope(
         self,
-        system_prompt: str,
         player_input: str,
-        game_context: Dict[str, Any],
+        game_state: Optional[GameState],
         dialogue_history: List[str],
-        additional_context: Optional[Dict[str, Any]] = None
-    ) -> str:
-        """
-        构建完整的Prompt
-        
-        Args:
-            system_prompt: 系统提示词
-            player_input: 玩家输入
-            game_context: 游戏上下文
-            dialogue_history: 对话历史
-        
-        Returns:
-            完整的提示词文本
-        """
-        # 构建游戏上下文文本
-        context_text = self._format_game_context(game_context)
-        
-        # 构建对话历史文本
-        history_text = ""
-        if dialogue_history:
-            history_text = "## 对话历史\n" + "\n".join(dialogue_history) + "\n\n"
+        additional_context: Optional[Dict[str, Any]] = None,
+    ) -> LLMRequestEnvelopeV2:
+        game_context = self._build_game_context(game_state)
+        additional_context = additional_context or {}
+        turn_id = int(getattr(game_state, "turn_count", 0) or 0)
+        actor_id = str(getattr(game_state, "player_id", "") or "")
 
-        extra_blocks: List[str] = []
-        if additional_context:
-            if additional_context.get("npc_response_mode"):
-                extra_blocks.append(f"## NPC响应模式\n{additional_context['npc_response_mode']}")
-            if additional_context.get("npc_response_policy"):
-                extra_blocks.append(f"## NPC模式策略\n{additional_context['npc_response_policy']}")
-            if additional_context.get("npc_prelude"):
-                extra_blocks.append(f"## 本轮前置NPC行动\n{additional_context['npc_prelude']}")
-            if additional_context.get("action_queue"):
-                extra_blocks.append(
-                    "## 当前行动队列快照\n"
-                    + json.dumps(additional_context["action_queue"], ensure_ascii=False)
-                )
-            if additional_context.get("current_actor_id"):
-                extra_blocks.append(f"## 当前行动者\n{additional_context['current_actor_id']}")
-            if additional_context.get("narrative_context"):
-                extra_blocks.append(f"## 叙事历史上下文\n{additional_context['narrative_context']}")
-            if additional_context.get("engine_context"):
-                extra_blocks.append(
-                    "## 引擎补充上下文\n"
-                    + json.dumps(additional_context["engine_context"], ensure_ascii=False, indent=2)
-                )
-            if additional_context.get("player_check_result"):
-                extra_blocks.append(
-                    "## 本轮玩家检定\n"
-                    + json.dumps(additional_context["player_check_result"], ensure_ascii=False, indent=2)
-                )
+        world_state_view = additional_context.get("world_state_view") or {
+            "current_map": game_context.get("current_location"),
+            "nearby_characters": game_context.get("current_characters", []),
+            "nearby_items": game_context.get("current_items", []),
+            "player_state": game_context.get("player_info"),
+            "available_exits": [],
+        }
+        dialogue_memory = additional_context.get("dialogue_memory") or {
+            "recent_dialogues": [
+                {"speaker": "history", "content": one}
+                for one in dialogue_history
+                if str(one).strip()
+            ]
+        }
+        narrative_memory = additional_context.get("narrative_memory") or {
+            "summary_lines": [],
+            "key_facts": [],
+            "stable_facts": [],
+        }
+        turn_trace = additional_context.get("turn_trace_so_far") or {
+            "turn_id": turn_id,
+            "steps": [],
+        }
 
-        extra_text = "\n\n".join(extra_blocks)
-        
-        # 组合完整提示词
-        prompt = f"""{system_prompt}
-
----
-
-{context_text}
-
-{history_text}
-{extra_text}
-
-## 玩家输入
-
-"{player_input}"
-
----
-
-请分析上述玩家输入，按照系统提示词中的要求返回JSON格式的分析结果。
-"""
-        return prompt
+        return LLMRequestEnvelopeV2(
+            request_id=f"turn-{turn_id}-player-parse",
+            turn_id=turn_id,
+            phase="player",
+            payload={
+                "raw_input_text": player_input,
+                "world_state_view": world_state_view,
+                "dialogue_memory": dialogue_memory,
+                "narrative_memory": narrative_memory,
+                "turn_trace_so_far": turn_trace,
+            },
+            constraints={
+                "enums": {
+                    "npc_response_mode": [str(additional_context.get("npc_response_mode", "unified") or "unified")],
+                    "interaction_type": ["action", "dialogue", "mixed"],
+                    "check_difficulty": ["常规", "困难", "极难"],
+                    "allowed_check_attributes": [
+                        "str", "con", "siz", "dex", "app", "int", "pow", "edu", "hp", "san", "lucky",
+                    ],
+                },
+                "rules": {
+                    "must_be_grounded": True,
+                    "forbid_field_invention": True,
+                    "actor_id": actor_id,
+                },
+            },
+            memory_policy={
+                "max_recent_dialogues": 20,
+                "max_summary_lines": 20,
+                "drift_anchor_required": True,
+            },
+            extensions={
+                "npc_response_policy": additional_context.get("npc_response_policy", ""),
+                "npc_prelude": additional_context.get("npc_prelude", ""),
+            },
+        )
     
-    def _format_game_context(self, game_context: Dict[str, Any]) -> str:
-        """
-        格式化游戏上下文为文本
-        
-        Args:
-            game_context: 游戏上下文字典
-        
-        Returns:
-            格式化后的文本
-        """
-        if not game_context:
-            return "## 游戏上下文\n（无上下文信息）"
-        
-        lines = ["## 游戏上下文"]
-        
-        # 当前位置
-        location = game_context.get("current_location")
-        if location:
-            lines.append(f"\n### 当前位置")
-            lines.append(f"- 名称: {location.get('name', '未知')}")
-            lines.append(f"- 描述: {location.get('description', '无')}")
-        
-        # 场景中的角色
-        characters = game_context.get("current_characters", [])
-        if characters:
-            lines.append(f"\n### 附近角色")
-            for char in characters:
-                char_type = "(玩家)" if char.get("is_player") else "(NPC)"
-                lines.append(f"- {char.get('name', '未知')} {char_type} [ID: {char.get('id', '?')}]")
-                # 添加基本信息
-                basic_info = char.get('basic_info', '')
-                if basic_info:
-                    lines.append(f"  - 简介: {basic_info}")
-                # 添加公开描述
-                desc_public = char.get('description_public', '')
-                if desc_public:
-                    lines.append(f"  - 描述: {desc_public}")
-        
-        # 场景中的物品
-        items = game_context.get("current_items", [])
-        if items:
-            lines.append(f"\n### 附近物品")
-            for item in items:
-                lines.append(f"- {item.get('name', '未知')} [ID: {item.get('id', '?')}]")
-                # 添加公开描述
-                desc_public = item.get('description_public', '')
-                if desc_public:
-                    lines.append(f"  - 描述: {desc_public}")
-        
-        # 玩家信息
-        player_info = game_context.get("player_info")
-        if player_info:
-            lines.append(f"\n### 玩家角色")
-            lines.append(f"- 名称: {player_info.get('name', '未知')}")
-            status = player_info.get("status", {})
-            lines.append(f"- 状态: HP {status.get('hp', '?')}/{status.get('max_hp', '?')}, SAN {status.get('san', '?')}")
-            attrs = player_info.get("attributes", {})
-            lines.append(f"- 关键属性: STR{attrs.get('str', '?')}, DEX{attrs.get('dex', '?')}, INT{attrs.get('int', '?')}, POW{attrs.get('pow', '?')}")
-        
-        return "\n".join(lines)
+    def _build_prompt(self, system_prompt: str, request: LLMRequestEnvelopeV2) -> str:
+        """Build V2 JSON prompt."""
+        return (
+            f"{system_prompt}\n\n"
+            "## 请求 JSON\n"
+            f"{json.dumps(request.model_dump(mode='json'), ensure_ascii=False, indent=2)}\n"
+        )
     
     def _parse_output(
         self,
@@ -609,7 +524,11 @@ class DMAgent:
             DMAgentOutput对象
         """
         try:
-            output = self._parse_output_strict(data, original_input)
+            output = self._parse_output_strict(
+                data,
+                original_input,
+                str(data.get("request_id", "")),
+            )
             
             logger.debug(f"意图解析完成: is_dialogue={output.is_dialogue}, needs_check={output.needs_check}")
             return output
@@ -636,6 +555,7 @@ class DMAgent:
         logger.warning(f"使用降级输出，错误: {error_message}")
         
         return DMAgentOutput(
+            interaction_type="dialogue",
             is_dialogue=True,
             response_to_player=f"我理解你的意图是：{player_input}。让我继续游戏。",
             needs_check=False,
@@ -683,10 +603,21 @@ class DMAgent:
         
         # 构建提示词
         prompt = self._build_prompt(
-            system_prompt=self.system_prompt,
-            player_input=player_input,
-            game_context=game_context,
-            dialogue_history=context_kwargs.get("dialogue_history", [])
+            self.system_prompt,
+            self._build_request_envelope(
+                player_input=player_input,
+                game_state=None,
+                dialogue_history=context_kwargs.get("dialogue_history", []),
+                additional_context={
+                    "world_state_view": {
+                        "current_map": game_context.get("current_location"),
+                        "nearby_characters": game_context.get("current_characters", []),
+                        "nearby_items": game_context.get("current_items", []),
+                        "player_state": game_context.get("player_info"),
+                        "available_exits": [],
+                    }
+                },
+            ),
         )
         
         # 调用LLM

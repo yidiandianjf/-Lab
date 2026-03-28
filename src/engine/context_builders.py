@@ -49,6 +49,8 @@ class WorldStateViewBuilder:
                         "is_player": char.is_player,
                         "location": char.location,
                         "basic_info": char.basic_info,
+                        "description": char.description.get_public_text() if char.description else "",
+                        "hint": char.description.hint if char.description else "",
                     }
                 )
 
@@ -62,6 +64,8 @@ class WorldStateViewBuilder:
                         "name": item.name,
                         "location": item.location,
                         "is_portable": item.is_portable,
+                        "description": item.description.get_public_text() if item.description else "",
+                        "hint": item.description.hint if item.description else "",
                     }
                 )
 
@@ -70,6 +74,7 @@ class WorldStateViewBuilder:
                 "id": current_map.id,
                 "name": current_map.name,
                 "description": current_map.description.get_public_text(),
+                "hint": current_map.description.hint,
             }
             if current_map
             else None,
@@ -78,6 +83,8 @@ class WorldStateViewBuilder:
             player_state={
                 "id": actor.id,
                 "name": actor.name,
+                "description": actor.description.get_public_text(),
+                "hint": actor.description.hint,
                 "status": {
                     "hp": actor.status.hp,
                     "max_hp": actor.status.max_hp,
@@ -129,6 +136,7 @@ class NarrativeMemoryBuilder:
         return NarrativeMemoryView(
             summary_lines=[str(one) for one in summary_lines if str(one).strip()],
             key_facts=[str(one) for one in key_facts if str(one).strip()],
+            stable_facts=[str(one) for one in key_facts if str(one).strip()],
         )
 
 

@@ -29,18 +29,14 @@ import logging
 from typing import Dict, List, Optional, Any
 
 from src.data.models import (
-    StateEvolutionInput,
     StateEvolutionOutput,
     StateChange,
     ChangeOperation,
     GameState,
-    Character,
-    Map,
-    Item,
     CheckOutput,
-    CheckResult,
+    LLMRequestEnvelopeV2,
 )
-from src.agent.llm_service import LLMService, LLMConfig
+from src.agent.llm_service import LLMService
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -54,50 +50,62 @@ ALLOWED_DELETE_LIST_FIELDS = {
     "memory.log",
 }
 
-# StateEvolutionOutput的JSON Schema（用于LLM输出约束）
+# StateEvolution V2 response schema（用于LLM输出约束）
 STATE_EVOLUTION_OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
-        "narrative": {
-            "type": "string",
-            "description": "生成的叙事文本，描述发生了什么"
-        },
-        "changes": {
-            "type": "array",
-            "description": "状态变更列表",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "description": "实体ID"},
-                    "field": {"type": "string", "description": "字段路径，支持点分如attributes.hp"},
-                    "operation": {"type": "string", "enum": ["update", "add", "del", "move"], "description": "操作类型"},
-                    "value": {"type": ["string", "number", "boolean", "array", "object", "null"], "description": "新值"}
+        "schema_version": {"type": "string"},
+        "request_id": {"type": "string"},
+        "result": {
+            "type": "object",
+            "properties": {
+                "actor_id": {"type": "string"},
+                "phase": {"type": "string", "enum": ["player", "npc"]},
+                "intent_text": {"type": "string"},
+                "check_result": {
+                    "type": ["object", "null"],
+                    "properties": {
+                        "result": {"type": "string"},
+                        "dice_roll": {"type": "integer"},
+                        "target_value": {"type": "integer"},
+                        "actor_value": {"type": "integer"},
+                        "detail": {"type": "string"},
+                    },
                 },
-                "required": ["id", "field", "operation"]
-            }
-        },
-        "resolved": {
-            "type": "boolean",
-            "description": "回合是否已解决，true表示本轮结束，false表示需要继续处理"
-        },
-        "next_action_hint": {
-            "type": ["string", "null"],
-            "description": "下轮行动提示，给玩家或DM的建议"
-        },
-        "is_end": {
-            "type": "boolean",
-            "description": "是否触发游戏结局"
-        },
-        "end_narrative": {
-            "type": "string",
-            "description": "结局描述，当is_end为true时使用"
+                "state_changes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "field": {"type": "string"},
+                            "operation": {"type": "string", "enum": ["update", "add", "del", "move"]},
+                            "value": {"type": ["string", "number", "boolean", "array", "object", "null"]},
+                        },
+                        "required": ["id", "field", "operation"],
+                    },
+                },
+                "local_narrative": {"type": "string"},
+                "outcome": {
+                    "type": "object",
+                    "properties": {
+                        "action_succeeded": {"type": "boolean"},
+                        "outcome_type": {"type": "string"},
+                        "consequence_tags": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["action_succeeded", "outcome_type", "consequence_tags"],
+                },
+            },
+            "required": ["actor_id", "phase", "intent_text", "state_changes", "local_narrative", "outcome"],
         },
         "erro":{
             "type":"string",
             "description":"报错信息输出错误时返回给llm,使其纠正错误"
-        }
+        },
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "extensions": {"type": "object"},
     },
-    "required": ["narrative", "changes", "resolved", "is_end"]
+    "required": ["schema_version", "request_id", "result"]
 }
 
 
@@ -183,20 +191,21 @@ class StateEvolution:
         Returns:
             StateEvolutionOutput对象，包含叙事、变更列表等
         """
-        # 构建游戏上下文
         game_context = self._build_game_context(game_state)
         if additional_context:
             game_context.update(additional_context)
-        
-        # 构建提示词
-        prompt = self._build_player_action_prompt(
+
+        request = self._build_player_request(
             check_result=check_result,
             action_description=action_description,
-            game_context=game_context
+            game_state=game_state,
+            game_context=game_context,
         )
-        
-        # 调用LLM
-        return self._call_evolution(prompt, game_state=game_state)
+        return self._call_evolution(
+            prompt=self._build_prompt(request),
+            game_state=game_state,
+            request_id=request.request_id,
+        )
     
     def evolve_npc_action(
         self,
@@ -228,7 +237,6 @@ class StateEvolution:
             logger.error(f"NPC不存在: {npc_id}")
             return self._create_fallback_output(f"NPC {npc_id} 不存在")
         
-        # 构建游戏上下文
         game_context = self._build_game_context(game_state)
         game_context["active_npc"] = {
             "id": npc.id,
@@ -245,16 +253,18 @@ class StateEvolution:
         if additional_context:
             game_context.update(additional_context)
         
-        # 构建提示词
-        prompt = self._build_npc_action_prompt(
+        request = self._build_npc_request(
             npc_id=npc_id,
             npc_intent=npc_intent,
             check_result=check_result,
-            game_context=game_context
+            game_state=game_state,
+            game_context=game_context,
         )
-        
-        # 调用LLM
-        return self._call_evolution(prompt, game_state=game_state)
+        return self._call_evolution(
+            prompt=self._build_prompt(request),
+            game_state=game_state,
+            request_id=request.request_id,
+        )
     
     def check_end_condition(self, game_state: GameState) -> Optional[StateEvolutionOutput]:
         """
@@ -268,13 +278,14 @@ class StateEvolution:
         """
         if not self.end_condition:
             return None
-        
-        # 构建结局判定提示词
+
         game_context = self._build_game_context(game_state)
-        prompt = self._build_end_check_prompt(game_context)
-        
-        # 调用LLM进行结局判定
-        result = self._call_evolution(prompt, game_state=game_state)
+        request = self._build_end_check_request(game_state=game_state, game_context=game_context)
+        result = self._call_evolution(
+            prompt=self._build_prompt(request),
+            game_state=game_state,
+            request_id=request.request_id,
+        )
         
         if result.is_end:
             return result
@@ -403,307 +414,162 @@ class StateEvolution:
             }
         
         return context
-    
-    def _build_player_action_prompt(
+
+    def _build_player_request(
         self,
         check_result: Optional[CheckOutput],
         action_description: str,
-        game_context: Dict[str, Any]
-    ) -> str:
-        """
-        构建玩家行动推演提示词
-        
-        Args:
-            check_result: 鉴定结果
-            action_description: 行动描述
-            game_context: 游戏上下文
-        
-        Returns:
-            完整的提示词文本
-        """
-        # 格式化游戏上下文
-        context_text = self._format_game_context(game_context)
-        
-        # 格式化鉴定结果
-        check_text = self._format_check_result(check_result)
+        game_state: GameState,
+        game_context: Dict[str, Any],
+    ) -> LLMRequestEnvelopeV2:
+        turn_id = int(getattr(game_state, "turn_count", 0) or 0)
+        turn_intent = game_context.get("turn_intent") or {
+            "actor_id": game_state.player_id or "",
+            "raw_input_text": action_description,
+            "intent_text": action_description,
+            "interaction_type": "action",
+            "check_plan": {
+                "check_needed": check_result is not None,
+                "check_type": "非对抗鉴定" if check_result is not None else None,
+                "attributes": [],
+                "target_id": None,
+                "difficulty": "常规" if check_result is not None else None,
+            },
+            "activation_hint": {
+                "response_needed_hint": bool(game_context.get("npc_response_expected", False)),
+                "preferred_actor_id": game_context.get("npc_response_actor_id"),
+                "candidate_npc_ids_hint": [],
+            },
+        }
+        return LLMRequestEnvelopeV2(
+            request_id=f"turn-{turn_id}-player-evolve",
+            turn_id=turn_id,
+            phase="player",
+            payload={
+                "world_state_view": game_context.get("world_state_view", {}),
+                "dialogue_memory": game_context.get("dialogue_memory", {"recent_dialogues": []}),
+                "narrative_memory": game_context.get("narrative_memory", {"summary_lines": [], "key_facts": [], "stable_facts": []}),
+                "turn_trace_so_far": game_context.get("turn_trace_so_far", {"turn_id": turn_id, "steps": []}),
+                "turn_intent": turn_intent,
+                "check_result": check_result.model_dump() if check_result else None,
+                "truth_anchor": game_context.get("player_resolution_anchor", {}),
+            },
+            constraints={
+                "enums": {"allowed_change_operations": ["update", "add", "del", "move"]},
+                "rules": {
+                    "delete_whitelist": sorted(ALLOWED_DELETE_LIST_FIELDS),
+                    "update_rule": {"must_use_existing_field": True, "forbid_schema_break": True},
+                    "add_rule": {"target_must_be_list": True, "forbid_nested_list_add": True},
+                    "delete_rule": {"forbid_scalar_delete": True, "coerce_scalar_delete_to_update": True},
+                    "move_rule": {
+                        "field_must_be": "location",
+                        "value_must_be": "target-id or {from,to}",
+                        "char_target_must_be_map": True,
+                        "item_target_must_be_char_or_map": True,
+                        "from_must_match_current_location_if_provided": True,
+                    },
+                },
+            },
+            memory_policy={"drift_anchor_required": True, "max_generated_narrative_chars": 800},
+            extensions={"end_condition": self.end_condition},
+        )
 
-        mode = str(game_context.get("npc_response_mode", "unified") or "unified")
-        policy = str(game_context.get("npc_response_policy", "") or "")
-        npc_response_expected = bool(game_context.get("npc_response_expected", False))
-        npc_actor_id = str(game_context.get("npc_response_actor_id", "") or "")
-        player_resolution_anchor = game_context.get("player_resolution_anchor")
-
-        runtime_lines = [
-            "## 玩家推演运行时上下文",
-            f"- mode: {mode}",
-            f"- npc_response_expected: {'true' if npc_response_expected else 'false'}",
-        ]
-        if npc_actor_id:
-            runtime_lines.append(f"- npc_response_actor_id: {npc_actor_id}")
-        if policy:
-            runtime_lines.append(f"- policy: {policy}")
-        if player_resolution_anchor:
-            runtime_lines.append(
-                "- player_resolution_anchor:\n"
-                + json.dumps(player_resolution_anchor, ensure_ascii=False, indent=2)
-            )
-        runtime_text = "\n".join(runtime_lines)
-        
-        prompt = f"""{self.system_prompt}
-
----
-
-## 当前任务：推演玩家行动结果
-
-{context_text}
-
-## 行动信息
-
-**行动描述**: {action_description}
-
-{check_text}
-
-{runtime_text}
-
-## 结局条件
-
-{self.end_condition if self.end_condition else "（无特殊结局条件）"}
-
----
-
-请根据上述信息，推演行动结果并返回JSON格式的响应。
-"""
-        return prompt
-    
-    def _build_npc_action_prompt(
+    def _build_npc_request(
         self,
         npc_id: str,
         npc_intent: Optional[str],
         check_result: Optional[CheckOutput],
-        game_context: Dict[str, Any]
-    ) -> str:
-        """
-        构建NPC行动推演提示词
-        
-        Args:
-            npc_id: NPC角色ID
-            npc_intent: NPC意图
-            game_context: 游戏上下文
-        
-        Returns:
-            完整的提示词文本
-        """
-        # 格式化游戏上下文
-        context_text = self._format_game_context(game_context)
-        
-        # NPC意图文本
-        intent_text = f"**NPC意图**: {npc_intent}\n" if npc_intent else ""
-        check_text = self._format_check_result(check_result)
-        mode = str(game_context.get("npc_response_mode", "unified") or "unified")
-        trigger = str(game_context.get("trigger", "unified") or "unified")
-        policy = str(game_context.get("npc_response_policy", "") or "")
-        player_action = str(game_context.get("player_action_description", "") or "")
-        player_check = game_context.get("player_check_result")
-        player_resolution_anchor = game_context.get("player_resolution_anchor")
+        game_state: GameState,
+        game_context: Dict[str, Any],
+    ) -> LLMRequestEnvelopeV2:
+        turn_id = int(getattr(game_state, "turn_count", 0) or 0)
+        return LLMRequestEnvelopeV2(
+            request_id=f"turn-{turn_id}-npc-evolve-{npc_id}",
+            turn_id=turn_id,
+            phase="npc",
+            payload={
+                "active_npc_id": npc_id,
+                "npc_action_plan": game_context.get("npc_action_plan", {}),
+                "world_state_view": game_context.get("world_state_view", {}),
+                "dialogue_memory": game_context.get("dialogue_memory", {"recent_dialogues": []}),
+                "narrative_memory": game_context.get("narrative_memory", {"summary_lines": [], "key_facts": [], "stable_facts": []}),
+                "turn_trace_so_far": game_context.get("turn_trace_so_far", {"turn_id": turn_id, "steps": []}),
+                "player_turn_resolution": game_context.get("player_turn_resolution"),
+                "truth_anchor": game_context.get("player_resolution_anchor", {}),
+                "npc_intent": npc_intent or "",
+                "check_result": check_result.model_dump() if check_result else None,
+            },
+            constraints={
+                "enums": {"allowed_change_operations": ["update", "add", "del", "move"]},
+                "rules": {
+                    "must_not_override_player_truth": True,
+                    "must_not_duplicate_applied_changes": True,
+                },
+            },
+            memory_policy={"max_generated_narrative_chars": 600, "drift_anchor_required": True},
+            extensions={"end_condition": self.end_condition},
+        )
 
-        runtime_lines = [
-            "## NPC响应运行时上下文",
-            f"- mode: {mode}",
-            f"- trigger: {trigger}",
-        ]
-        if policy:
-            runtime_lines.append(f"- policy: {policy}")
-        if player_action:
-            runtime_lines.append(f"- 本轮玩家行动: {player_action}")
-        if player_check:
-            runtime_lines.append("- 本轮玩家检定:\n" + json.dumps(player_check, ensure_ascii=False, indent=2))
-        if player_resolution_anchor:
-            runtime_lines.append(
-                "- player_resolution_anchor:\n"
-                + json.dumps(player_resolution_anchor, ensure_ascii=False, indent=2)
-            )
-        runtime_text = "\n".join(runtime_lines)
-        
-        prompt = f"""{self.system_prompt}
+    def _build_end_check_request(
+        self,
+        game_state: GameState,
+        game_context: Dict[str, Any],
+    ) -> LLMRequestEnvelopeV2:
+        turn_id = int(getattr(game_state, "turn_count", 0) or 0)
+        return LLMRequestEnvelopeV2(
+            request_id=f"turn-{turn_id}-end-check",
+            turn_id=turn_id,
+            phase="end_check",
+            payload={
+                "world_state_view": game_context.get("world_state_view", {}),
+                "dialogue_memory": game_context.get("dialogue_memory", {"recent_dialogues": []}),
+                "narrative_memory": game_context.get("narrative_memory", {"summary_lines": [], "key_facts": [], "stable_facts": []}),
+                "turn_trace_so_far": game_context.get("turn_trace_so_far", {"turn_id": turn_id, "steps": []}),
+                "turn_intent": {
+                    "actor_id": game_state.player_id or "",
+                    "raw_input_text": "结局判定",
+                    "intent_text": "检查当前状态是否触发结局",
+                    "interaction_type": "action",
+                    "check_plan": {
+                        "check_needed": False,
+                        "check_type": None,
+                        "attributes": [],
+                        "target_id": None,
+                        "difficulty": None,
+                    },
+                    "activation_hint": {
+                        "response_needed_hint": False,
+                        "preferred_actor_id": None,
+                        "candidate_npc_ids_hint": [],
+                    },
+                },
+                "check_result": None,
+                "truth_anchor": {},
+            },
+            constraints={
+                "enums": {"allowed_change_operations": ["update", "add", "del", "move"]},
+                "rules": {
+                    "must_only_decide_ending": True,
+                    "must_not_invent_new_state_change": True,
+                },
+            },
+            memory_policy={"drift_anchor_required": True, "max_generated_narrative_chars": 400},
+            extensions={"end_condition": self.end_condition, "end_check_only": True},
+        )
 
----
-
-## 当前任务：推演NPC行动
-
-{context_text}
-
-{intent_text}
-
-{runtime_text}
-
-## NPC检定信息
-
-{check_text}
-
-## 说明
-
-请根据NPC的性格、当前状态和情境，推演NPC的行动。
-当 mode=unified 且 trigger=unified 时：将NPC行动作为同回合统一响应，不要重复复述玩家行动。
-在narrative中描述NPC的行动，在npc_action中简洁概括NPC的行动。
-返回的changes应反映NPC行动带来的状态变更。
-
----
-
-请推演NPC行动并返回JSON格式的响应。
-"""
-        return prompt
+    def _build_prompt(self, request: LLMRequestEnvelopeV2) -> str:
+        return (
+            f"{self.system_prompt}\n\n"
+            "## 请求 JSON\n"
+            f"{json.dumps(request.model_dump(mode='json'), ensure_ascii=False, indent=2)}\n"
+        )
     
-    def _build_end_check_prompt(self, game_context: Dict[str, Any]) -> str:
-        """
-        构建结局判定提示词
-        
-        Args:
-            game_context: 游戏上下文
-        
-        Returns:
-            完整的提示词文本
-        """
-        # 格式化游戏上下文
-        context_text = self._format_game_context(game_context)
-        
-        prompt = f"""{self.system_prompt}
-
----
-
-## 当前任务：结局判定
-
-{context_text}
-
-## 结局条件
-
-{self.end_condition}
-
----
-
-请检查当前游戏状态是否满足结局条件。
-如果满足，is_end设为true，并在end_narrative中描述结局。
-如果不满足，is_end设为false，narrative可为空。
-
-请返回JSON格式的响应。
-"""
-        return prompt
-    
-    def _format_game_context(self, game_context: Dict[str, Any]) -> str:
-        """
-        格式化游戏上下文为文本
-        
-        Args:
-            game_context: 游戏上下文字典
-        
-        Returns:
-            格式化后的文本
-        """
-        if not game_context:
-            return "## 游戏上下文\n（无上下文信息）"
-        
-        lines = ["## 游戏上下文"]
-        
-        # 回合数
-        turn_count = game_context.get("turn_count", 0)
-        lines.append(f"\n**当前回合**: {turn_count}")
-        
-        # 当前位置
-        location = game_context.get("current_location")
-        if location:
-            lines.append(f"\n### 当前位置")
-            lines.append(f"- 名称: {location.get('name', '未知')}")
-            lines.append(f"- 描述: {location.get('description', '无')}")
-        
-        # 可用出口（防止LLM使用错误的地图ID）
-        exits = game_context.get("available_exits", [])
-        if exits:
-            lines.append(f"\n### 可用出口（变更位置时必须使用以下准确ID）")
-            for exit_info in exits:
-                lines.append(f"- **{exit_info.get('direction', '未知')}**: {exit_info.get('description', '')}")
-                lines.append(f"  - 目标地图ID: `{exit_info.get('map_id')}`")
-        
-        # 场景中的角色
-        characters = game_context.get("current_characters", [])
-        if characters:
-            lines.append(f"\n### 场景中的角色")
-            for char in characters:
-                is_player = "（玩家）" if char.get("is_player") else "（NPC）"
-                lines.append(f"- **{char.get('name', '未知')}**{is_player}")
-                lines.append(f"  - ID: {char.get('id')}")
-                lines.append(f"  - 状态: HP {char.get('status', {}).get('hp', '?')}/{char.get('status', {}).get('max_hp', '?')}, SAN {char.get('status', {}).get('san', '?')}")
-                if char.get('basic_info'):
-                    lines.append(f"  - 简介: {char['basic_info']}")
-                if char.get('description_hint'):
-                    lines.append(f"  - 隐藏信息: {char['description_hint']}")
-        
-        # 场景中的物品
-        items = game_context.get("current_items", [])
-        if items:
-            lines.append(f"\n### 场景中的物品")
-            for item in items:
-                lines.append(f"- **{item.get('name', '未知')}** (ID: {item.get('id')})")
-                lines.append(f"  - 位置: {item.get('location', '未知')}")
-                lines.append(f"  - 可携带: {'是' if item.get('is_portable') else '否'}")
-                if item.get('description_hint'):
-                    lines.append(f"  - 隐藏信息: {item['description_hint']}")
-        
-        # 玩家信息 要提供玩家的id
-        player = game_context.get("player_info")
-        if player:
-            lines.append(f"\n### 玩家信息")
-            lines.append(f"- 名称: {player.get('name', '未知')}")
-            lines.append(f"- 位置: {player.get('location', '未知')}")
-            lines.append(f"- 状态: HP {player.get('status', {}).get('hp', '?')}/{player.get('status', {}).get('max_hp', '?')}, SAN {player.get('status', {}).get('san', '?')}")
-            attrs = player.get('attributes', {})
-            lines.append(f"- 属性: STR{attrs.get('str', '?')} CON{attrs.get('con', '?')} DEX{attrs.get('dex', '?')} INT{attrs.get('int', '?')} POW{attrs.get('pow', '?')} EDU{attrs.get('edu', '?')}")
-            inventory_details = player.get('inventory_details', [])
-            if inventory_details:
-                lines.append(f"- 背包物品:")
-                for item in inventory_details:
-                    lines.append(f"  - {item.get('name')} (ID: {item.get('id')})")
-        
-        # 活跃NPC（NPC推演时）
-        active_npc = game_context.get("active_npc")
-        if active_npc:
-            lines.append(f"\n### 行动NPC")
-            lines.append(f"- 名称: {active_npc.get('name', '未知')}")
-            lines.append(f"- ID: {active_npc.get('id')}")
-            lines.append(f"- 位置: {active_npc.get('location', '未知')}")
-            lines.append(f"- 状态: HP {active_npc.get('status', {}).get('hp', '?')}, SAN {active_npc.get('status', {}).get('san', '?')}")
-            if active_npc.get('basic_info'):
-                lines.append(f"- 简介: {active_npc['basic_info']}")
-            if active_npc.get('description_hint'):
-                lines.append(f"- 隐藏信息: {active_npc['description_hint']}")
-        
-        return "\n".join(lines)
-    
-    def _format_check_result(self, check_result: Optional[CheckOutput]) -> str:
-        """
-        格式化鉴定结果为文本
-        
-        Args:
-            check_result: 鉴定结果
-        
-        Returns:
-            格式化后的文本
-        """
-        if check_result is None:
-            return "**鉴定结果**: 自动成功（无需鉴定）"
-        
-        result_emoji = {
-            CheckResult.CRITICAL_SUCCESS: "🌟",
-            CheckResult.SUCCESS: "✅",
-            CheckResult.FAILURE: "❌",
-            CheckResult.FUMBLE: "💀",
-        }.get(check_result.result, "")
-        
-        return f"""**鉴定结果**: {check_result.result.value} {result_emoji}
-- 掷骰: {check_result.dice_roll}
-- 目标值: {check_result.target_value}
-- 实际值: {check_result.actor_value}
-- 详情: {check_result.detail}"""
-    
-    def _call_evolution(self, prompt: str, game_state: Optional[GameState] = None) -> StateEvolutionOutput:
+    def _call_evolution(
+        self,
+        prompt: str,
+        game_state: Optional[GameState] = None,
+        request_id: str = "",
+    ) -> StateEvolutionOutput:
         """
         调用LLM进行状态推演
         
@@ -729,7 +595,7 @@ class StateEvolution:
                     return self._create_fallback_output(f"推演失败: {error_msg}")
 
                 data = response.get("data", {})
-                output = self._parse_output(data)
+                output = self._parse_output(data, request_id=request_id)
 
                 if not game_state:
                     return output
@@ -761,10 +627,10 @@ class StateEvolution:
             "---\n\n"
             "## 系统错误反馈（erro）\n\n"
             f"{error_feedback}\n\n"
-            "请根据以上错误反馈修正输出，返回合法JSON，且changes必须只引用当前存在的实体与字段。"
+            "请根据以上错误反馈修正输出，返回合法JSON，且state_changes必须只引用当前存在的实体与字段。"
         )
     
-    def _parse_output(self, data: Dict[str, Any]) -> StateEvolutionOutput:
+    def _parse_output(self, data: Dict[str, Any], request_id: str = "") -> StateEvolutionOutput:
         """
         解析LLM输出为StateEvolutionOutput
         
@@ -774,9 +640,15 @@ class StateEvolution:
         Returns:
             StateEvolutionOutput对象
         """
-        # 解析changes列表
+        if request_id and str(data.get("request_id", "")) not in {"", request_id}:
+            raise ValueError("request_id 不匹配")
+
+        result = data.get("result")
+        if not isinstance(result, dict):
+            raise ValueError("缺少 result 对象")
+
         changes = []
-        for change_data in data.get("changes", []):
+        for change_data in result.get("state_changes", []):
             try:
                 # 将字符串operation转换为枚举
                 op_str = change_data.get("operation", "update")
@@ -794,12 +666,12 @@ class StateEvolution:
                 continue
         
         return StateEvolutionOutput(
-            narrative=data.get("narrative", ""),
+            narrative=result.get("local_narrative", ""),
             changes=changes,
-            resolved=data.get("resolved", True),
-            next_action_hint=data.get("next_action_hint"),
-            is_end=data.get("is_end", False),
-            end_narrative=data.get("end_narrative", "")
+            resolved=True,
+            next_action_hint=((data.get("extensions") or {}).get("next_action_hint")),
+            is_end=bool(((data.get("extensions") or {}).get("is_end", False))),
+            end_narrative=str(((data.get("extensions") or {}).get("end_narrative", ""))),
         )
     
     def _create_fallback_output(self, reason: str) -> StateEvolutionOutput:

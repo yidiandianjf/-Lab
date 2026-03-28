@@ -23,9 +23,9 @@ class NPCActionType(str, Enum):
 class NPCCheckDifficulty(str, Enum):
     """Difficulty levels for structured NPC checks."""
 
-    REGULAR = "regular"
-    HARD = "hard"
-    EXTREME = "extreme"
+    REGULAR = "常规"
+    HARD = "困难"
+    EXTREME = "极难"
 
 
 class NPCCheckPlan(BaseModel):
@@ -71,4 +71,3 @@ __all__ = [
     "NPCActionForm",
     "NPCActionDecision",
 ]
-

@@ -236,6 +236,7 @@ class DialogueDMAgent(DummyDMAgent):
 
     def parse_intent(self, player_input: str, game_state: GameState, additional_context=None):
         return DMAgentOutput(
+            interaction_type="dialogue",
             is_dialogue=True,
             response_to_player="瀹堝崼浣庡０鍥炲簲浜嗕綘銆" ,
             needs_check=False,
@@ -247,6 +248,27 @@ class DialogueDMAgent(DummyDMAgent):
             npc_response_needed=self._npc_response_needed,
             npc_actor_id="char-guard-01" if self._npc_response_needed else None,
             npc_intent="瀹堝崼鍥炲簲鐜╁鐨勫璇" if self._npc_response_needed else None,
+        )
+
+
+class MixedDialogueDMAgent(DummyDMAgent):
+    def __init__(self, npc_response_needed: bool):
+        self._npc_response_needed = npc_response_needed
+
+    def parse_intent(self, player_input: str, game_state: GameState, additional_context=None):
+        return DMAgentOutput(
+            interaction_type="mixed",
+            is_dialogue=True,
+            response_to_player="我听到了你的话，先按你的动作推进。",
+            needs_check=False,
+            check_type=None,
+            check_attributes=[],
+            check_target=None,
+            difficulty="常规",
+            action_description=player_input,
+            npc_response_needed=self._npc_response_needed,
+            npc_actor_id="char-guard-01" if self._npc_response_needed else None,
+            npc_intent="守卫对玩家话语与动作做联合回应" if self._npc_response_needed else None,
         )
 
 
@@ -264,6 +286,35 @@ class TriggerAwareStateAgent(DummyStateAgent):
         self.triggers.append(trigger)
         return StateEvolutionOutput(
             narrative="瀹堝崼瑙傚療鐫€浣犵殑涓惧姩銆" ,
+            changes=[],
+            resolved=True,
+            next_action_hint=None,
+            is_end=False,
+            end_narrative="",
+        )
+
+
+class MixedCapableStateAgent(DummyStateAgent):
+    def __init__(self):
+        super().__init__()
+        self.player_calls = 0
+        self.npc_calls = 0
+
+    def evolve_player_action(self, check_result, action_description, game_state, additional_context=None):
+        self.player_calls += 1
+        return StateEvolutionOutput(
+            narrative="你一边交涉一边推进动作，局势开始变化。",
+            changes=[],
+            resolved=True,
+            next_action_hint=None,
+            is_end=False,
+            end_narrative="",
+        )
+
+    def evolve_npc_action(self, npc_id, game_state, check_result=None, npc_intent=None, additional_context=None):
+        self.npc_calls += 1
+        return StateEvolutionOutput(
+            narrative="守卫谨慎地回应了你的请求。",
             changes=[],
             resolved=True,
             next_action_hint=None,
@@ -1088,6 +1139,48 @@ class RegressionFlowTests(unittest.TestCase):
         self.assertEqual(result.get("response"), "瀹堝崼浣庡０鍥炲簲浜嗕綘銆")
         self.assertEqual(state_agent.npc_calls, 0)
         self.assertEqual(engine.game_state.turn_count, start_turn)
+
+    def test_mixed_dialogue_runs_player_action_and_npc_response_together(self):
+        bundle = load_initial_world_bundle(FakeIO(), player_name="测试者", world_name="mysterious_library")
+
+        state_agent = MixedCapableStateAgent()
+        engine = GameEngine(
+            io_system=FakeIO(),
+            dm_agent=MixedDialogueDMAgent(npc_response_needed=True),
+            state_agent=state_agent,
+            npc_response_mode="reactive",
+        )
+        engine.game_state = bundle.game_state
+        engine.apply_world_settings(bundle.world_name, bundle.end_condition)
+
+        result = engine.process_input("我边安抚守卫边试着接过钥匙")
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result.get("response"), "我听到了你的话，先按你的动作推进。")
+        self.assertGreaterEqual(state_agent.player_calls, 1)
+        self.assertGreaterEqual(state_agent.npc_calls, 1)
+        self.assertTrue((result.get("narrative") or "").strip())
+
+    def test_mixed_dialogue_without_npc_still_executes_player_action(self):
+        bundle = load_initial_world_bundle(FakeIO(), player_name="测试者", world_name="mysterious_library")
+
+        state_agent = MixedCapableStateAgent()
+        engine = GameEngine(
+            io_system=FakeIO(),
+            dm_agent=MixedDialogueDMAgent(npc_response_needed=False),
+            state_agent=state_agent,
+            npc_response_mode="reactive",
+        )
+        engine.game_state = bundle.game_state
+        engine.apply_world_settings(bundle.world_name, bundle.end_condition)
+
+        start_turn = engine.game_state.turn_count
+        result = engine.process_input("我边说边翻看桌上的文件")
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result.get("response"), "我听到了你的话，先按你的动作推进。")
+        self.assertGreaterEqual(state_agent.player_calls, 1)
+        self.assertGreater(engine.game_state.turn_count, start_turn)
 
     def test_change_failure_aborts_turn_and_reports_error(self):
         bundle = load_initial_world_bundle(FailingIO(fail_on_entity_id="bad-entity"), player_name="娴嬭瘯鑰?", world_name="mysterious_library")
