@@ -202,8 +202,7 @@
 #### 结局判定特有上下文
 - 仅基础游戏上下文 + 结局条件文本
 
-### 2.3 可能的冗余
-1. **`all_items_info` 包含所有物品** - 可能过于冗余,当前地图外的物品信息是否真的需要? 
+### 2.3 可能的冗余 
 2. **`inventory` 和 `inventory_details` 重复** - 一个是ID列表,一个是详细信息
 3. **`available_exits` 信息** - 包含方向、描述、地图ID,可能只需地图ID
 4. **`player_resolution_anchor` 和 `player_check_result` 重复** - 两者都包含检定信息
@@ -226,7 +225,7 @@
     "player_id": "玩家ID",
     "npc_ids": ["NPC ID列表"],
     "trigger_source": "queue/reactive/unified",
-    "player_intent": {  # DMAgentOutput的JSON表示   #修改建议:需要被激活的npc,以及玩家的行为描述,其它就删掉
+    "player_intent": {  # DMAgentOutput的JSON表示   #修改建议:直接删去,多余字段太多
         "is_dialogue": true/false,
         "response_to_player": "...",
         "needs_check": true/false,

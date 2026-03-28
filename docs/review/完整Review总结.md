@@ -600,12 +600,11 @@ class ContextFilter:
 ### 7.5.9 上下文信息不足风险分析
 
 **高风险Agent**：
-1. **State Evolution**: `all_items_info` 包含所有物品（可能剧透）
 2. **NPC Director**: 缺少周围角色信息、场景物品信息、只传递3个属性
 3. **DM Agent**: `engine_context` 过于宽泛
 
 **建议**：
-- State Evolution: 删除 `all_items_info`，只传递当前场景物品
+
 - NPC Director: 添加周围环境上下文、完整属性
 - DM Agent: 删除 `engine_context`，使用标准化上下文
 
@@ -631,26 +630,6 @@ class ContextFilter:
 - 玩家检定结果是否能一致传递到NPC决策与叙事合并
 - 历史兼容层是否已经反向污染主流程
 
-#### 发现1：默认启动路径将 LLM 环境变成了硬依赖
-
-**当前实现：**
-- `GameEngine` 默认直接实例化 `DMAgent()` 与 `StateEvolutionAgent()`
-- 两者初始化时会立即创建 `LLMService()`
-- `LLMService` 在未安装 `openai` 或未配置 API Key 时会直接抛异常
-
-**涉及代码：**
-- `src/engine/game_engine.py:86-88`
-- `src/agent/dm_agent.py:151-157`
-- `src/agent/state_evolution.py:130-136`
-- `src/agent/llm_service.py:107, 246`
-
-**风险：**
-- 与运行时规范中“每个LLM调用点都应有规则兜底路径”的要求冲突
-- 在未配置LLM环境时，引擎可能无法完成默认初始化，导致“无法启动”而不是“可降级运行”
-
-**建议：**
-- 将 `DMAgent` / `StateEvolution` 的 LLM 初始化改为懒加载或安全降级
-- 保证缺少 `openai`、API Key、网络时，系统仍能进入可运行的规则/占位模式
 
 ---
 
@@ -744,7 +723,7 @@ class ContextFilter:
 - State Evolution Prompt 仍保留 `Move` 草案备注
 - NPC推演提示中提到 `npc_action`，但当前输出模型中并不存在该字段
 - Prompt 仍要求“物品转移时同时更新原持有者和新持有者 inventory”，而当前IO层已经承担了双向关系同步
-
+- 部分提示词冗余
 **涉及文件：**
 - `src/agent/prompt/system_prompt.md:89-96`
 - `src/agent/prompt/state_evolution_prompt.md:71`
@@ -798,9 +777,6 @@ class ContextFilter:
 3. **第一阶段代码化任务**
    - 添加 `move` 操作，简化LLM输出
 
-4. **移除默认启动对LLM环境的硬依赖**
-   - 允许无 `openai`/无 API Key 时进入可降级运行
-   - 将 Agent 的 LLM 初始化改为安全降级或懒加载
 
 5. **修复 `\move` 的事务前副作用**
    - 删除命令阶段对 `current_scene_id` 的直接写入
@@ -820,6 +796,14 @@ class ContextFilter:
 8. **重构NPCDirector输入结构**
    - 分离 `activated_npcs` 和 `surrounding_context`
    - 让NPC能感知周围不应激活的角色
+   - 为导演提供[{
+    turn_count: 回合数
+    player: 输入信息
+    npc_id: 交互信息
+    event: 叙事信息
+   },
+   ...
+   ]等结构化的上下文信息,统一输入字段
 
 9. **补充NPC Director的NPC属性**
    - 添加STR/CON等战斗相关属性
@@ -838,6 +822,7 @@ class ContextFilter:
 13. **清理提示词中的过时契约**
    - 删除 `#修改建议`、非法JSON示例片段、过时输出字段说明
    - 明确哪些级联关系由代码自动处理
+   - 删除冗余提示
 
 
 ### 8.3 低优先级（长期规划）
