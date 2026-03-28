@@ -346,8 +346,12 @@ Last Updated: 2026-03-28
 2. **state_changes合法性**
    - 所有id必须在world_state_view中存在
    - 所有field必须是真实存在的字段路径
+  - 禁止修改元数据字段：`is_player`、`is_portable`、`id`
+  - `location`字段必须使用`move`，不要使用`update/add/del`
+  - `add/del`仅允许白名单字段：`inventory`、`description.public`、`memory.log`、`neighbors`、`entities.characters`、`entities.items`
    - del操作仅限于白名单字段
    - move操作仅限于field="location"
+  - 角色MOVE目标必须是`map-xxx`；物品MOVE目标必须是`char-xxx`或`map-xxx`
 
 3. **NPC阶段特殊约束**
    - 不得覆盖玩家阶段的truth_anchor
@@ -367,6 +371,7 @@ Last Updated: 2026-03-28
 1. **无法确定变更时：** 输出空数组[]
 2. **信息矛盾时：** 优先服从truth_anchor
 3. **收到系统错误反馈时：** 按反馈修正state_changes
+4. **不要依赖系统兼容层：** 系统可能将少量`location+add/update`自动纠偏为`move`，但这是兜底措施；你必须直接输出合法操作
 
 ---
 
@@ -531,8 +536,10 @@ Last Updated: 2026-03-28
 - [ ] state_changes中的每个id都在world_state_view中可找到
 - [ ] operation在["update", "add", "del", "move"]中
 - [ ] del操作的目标field在白名单中
+- [ ] add操作的目标field在白名单中
 - [ ] move操作的field为"location"
 - [ ] 角色location目标是地图ID（map-xxx），不是自然语言地名
+- [ ] 未修改 is_player / is_portable / id 等元数据字段
 
 **约束遵守：**
 - [ ] 未违背truth_anchor的任何事实

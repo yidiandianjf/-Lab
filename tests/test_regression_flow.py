@@ -376,7 +376,7 @@ class RegressionFlowTests(unittest.TestCase):
 
         self.assertEqual(bundle.world_name, "mysterious_library")
         self.assertTrue(bundle.end_condition)
-        self.assertEqual(bundle.npc_response_mode, manifest.get("npc_response_mode", "queue"))
+        self.assertEqual(bundle.npc_response_mode, "unified")
         self.assertEqual(bundle.npc_director_use_llm, manifest.get("npc_director_use_llm", True))
         self.assertEqual(bundle.narrative_merge_use_llm, manifest.get("narrative_merge_use_llm", True))
         self.assertIn("char-player-01", bundle.game_state.characters)
@@ -397,7 +397,7 @@ class RegressionFlowTests(unittest.TestCase):
             end_condition=bundle.end_condition,
             npc_response_mode="reactive",
         )
-        self.assertEqual(engine._npc_response_mode, "reactive")
+        self.assertEqual(engine._npc_response_mode, "unified")
 
     def test_apply_world_settings_can_override_llm_switches(self):
         bundle = load_initial_world_bundle(FakeIO(), player_name="娴嬭瘯鑰?", world_name="mysterious_library")
@@ -965,7 +965,7 @@ class RegressionFlowTests(unittest.TestCase):
 
                 self.assertEqual(engine.world_name, bundle.world_name)
                 self.assertEqual(engine.end_condition, bundle.end_condition)
-                self.assertEqual(engine._npc_response_mode, "reactive")
+                self.assertEqual(engine._npc_response_mode, "unified")
                 self.assertEqual(getattr(engine.narrative_context, "window_size", None), 3)
                 self.assertFalse(engine._npc_director_use_llm)
                 self.assertFalse(engine._narrative_merge_use_llm)
@@ -1096,6 +1096,192 @@ class RegressionFlowTests(unittest.TestCase):
             self.assertNotIn("item-key-01", reloaded_guard.inventory)
             self.assertIn("item-key-01", reloaded_player.inventory)
             self.assertEqual(reloaded_key.location, "char-player-01")
+
+    def test_engine_memory_sync_after_item_move_updates_scene_and_inventory(self):
+        bundle = load_initial_world_bundle(FakeIO(), player_name="测试者", world_name="mysterious_library")
+
+        engine = GameEngine(
+            io_system=FakeIO(),
+            dm_agent=DummyDMAgent(),
+            state_agent=DummyStateAgent(),
+        )
+        engine.game_state = bundle.game_state
+        engine.apply_world_settings(bundle.world_name, bundle.end_condition)
+
+        player_id = engine.game_state.player_id
+        self.assertIsNotNone(player_id)
+        player = engine.game_state.characters[player_id]
+
+        item_id = "item-book-01"
+        self.assertIn(item_id, engine.game_state.maps[player.location].entities.items)
+
+        failures = engine._apply_changes(
+            [
+                StateChange(
+                    id=item_id,
+                    field="location",
+                    operation=ChangeOperation.MOVE,
+                    value={"from": player.location, "to": player_id},
+                )
+            ]
+        )
+
+        self.assertFalse(failures)
+        self.assertEqual(engine.game_state.items[item_id].location, player_id)
+        self.assertIn(item_id, engine.game_state.characters[player_id].inventory)
+        self.assertNotIn(item_id, engine.game_state.maps[player.location].entities.items)
+
+    def test_engine_memory_sync_after_character_move_updates_map_entities(self):
+        bundle = load_initial_world_bundle(FakeIO(), player_name="测试者", world_name="mysterious_library")
+
+        engine = GameEngine(
+            io_system=FakeIO(),
+            dm_agent=DummyDMAgent(),
+            state_agent=DummyStateAgent(),
+        )
+        engine.game_state = bundle.game_state
+        engine.apply_world_settings(bundle.world_name, bundle.end_condition)
+
+        npc_id = "char-archivist-01"
+        npc = engine.game_state.characters[npc_id]
+        source_map_id = npc.location
+        source_map = engine.game_state.maps[source_map_id]
+        self.assertTrue(source_map.neighbors)
+        target_map_id = source_map.neighbors[0].id
+
+        failures = engine._apply_changes(
+            [
+                StateChange(
+                    id=npc_id,
+                    field="location",
+                    operation=ChangeOperation.MOVE,
+                    value={"from": source_map_id, "to": target_map_id},
+                )
+            ]
+        )
+
+        self.assertFalse(failures)
+        self.assertEqual(engine.game_state.characters[npc_id].location, target_map_id)
+        self.assertNotIn(npc_id, engine.game_state.maps[source_map_id].entities.characters)
+        self.assertIn(npc_id, engine.game_state.maps[target_map_id].entities.characters)
+
+    def test_engine_memory_sync_after_inventory_add_sets_item_location(self):
+        bundle = load_initial_world_bundle(FakeIO(), player_name="测试者", world_name="mysterious_library")
+
+        engine = GameEngine(
+            io_system=FakeIO(),
+            dm_agent=DummyDMAgent(),
+            state_agent=DummyStateAgent(),
+        )
+        engine.game_state = bundle.game_state
+        engine.apply_world_settings(bundle.world_name, bundle.end_condition)
+
+        player_id = engine.game_state.player_id
+        self.assertIsNotNone(player_id)
+        player = engine.game_state.characters[player_id]
+        map_id = player.location
+        item_id = "item-book-01"
+
+        failures = engine._apply_changes(
+            [
+                StateChange(
+                    id=player_id,
+                    field="inventory",
+                    operation=ChangeOperation.ADD,
+                    value=item_id,
+                )
+            ]
+        )
+
+        self.assertFalse(failures)
+        self.assertIn(item_id, player.inventory)
+        self.assertEqual(engine.game_state.items[item_id].location, player_id)
+        self.assertNotIn(item_id, engine.game_state.maps[map_id].entities.items)
+
+    def test_engine_apply_changes_ignores_redundant_inventory_add_after_move(self):
+        bundle = load_initial_world_bundle(FakeIO(), player_name="测试者", world_name="mysterious_library")
+
+        engine = GameEngine(
+            io_system=FakeIO(),
+            dm_agent=DummyDMAgent(),
+            state_agent=DummyStateAgent(),
+        )
+        engine.game_state = bundle.game_state
+        engine.apply_world_settings(bundle.world_name, bundle.end_condition)
+
+        player_id = engine.game_state.player_id
+        self.assertIsNotNone(player_id)
+        player = engine.game_state.characters[player_id]
+        map_id = player.location
+        item_id = "item-book-01"
+
+        failures = engine._apply_changes(
+            [
+                StateChange(
+                    id=item_id,
+                    field="location",
+                    operation=ChangeOperation.MOVE,
+                    value={"from": map_id, "to": player_id},
+                ),
+                StateChange(
+                    id=player_id,
+                    field="inventory",
+                    operation=ChangeOperation.ADD,
+                    value=item_id,
+                ),
+            ]
+        )
+
+        self.assertFalse(failures)
+        self.assertEqual(engine.game_state.items[item_id].location, player_id)
+        self.assertEqual(player.inventory.count(item_id), 1)
+        self.assertNotIn(item_id, engine.game_state.maps[map_id].entities.items)
+
+    def test_engine_memory_sync_after_map_entities_add_sets_item_location(self):
+        bundle = load_initial_world_bundle(FakeIO(), player_name="测试者", world_name="mysterious_library")
+
+        engine = GameEngine(
+            io_system=FakeIO(),
+            dm_agent=DummyDMAgent(),
+            state_agent=DummyStateAgent(),
+        )
+        engine.game_state = bundle.game_state
+        engine.apply_world_settings(bundle.world_name, bundle.end_condition)
+
+        player_id = engine.game_state.player_id
+        self.assertIsNotNone(player_id)
+        player = engine.game_state.characters[player_id]
+        map_id = player.location
+        item_id = "item-book-01"
+
+        # 先让物品在玩家身上，再通过 entities.items ADD 放回地图
+        failures = engine._apply_changes(
+            [
+                StateChange(
+                    id=item_id,
+                    field="location",
+                    operation=ChangeOperation.MOVE,
+                    value={"from": map_id, "to": player_id},
+                )
+            ]
+        )
+        self.assertFalse(failures)
+
+        failures = engine._apply_changes(
+            [
+                StateChange(
+                    id=map_id,
+                    field="entities.items",
+                    operation=ChangeOperation.ADD,
+                    value=item_id,
+                )
+            ]
+        )
+
+        self.assertFalse(failures)
+        self.assertEqual(engine.game_state.items[item_id].location, map_id)
+        self.assertIn(item_id, engine.game_state.maps[map_id].entities.items)
+        self.assertNotIn(item_id, engine.game_state.characters[player_id].inventory)
 
     def test_dialogue_can_still_trigger_npc_response(self):
         bundle = load_initial_world_bundle(FakeIO(), player_name="娴嬭瘯鑰?", world_name="mysterious_library")

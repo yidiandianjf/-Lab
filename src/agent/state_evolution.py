@@ -26,7 +26,7 @@
 
 import json
 import logging
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 from src.data.models import (
     StateEvolutionOutput,
@@ -48,6 +48,21 @@ ALLOWED_DELETE_LIST_FIELDS = {
     "entities.characters",
     "description.public",
     "memory.log",
+}
+
+ALLOWED_LIST_MUTATION_FIELDS = {
+    "inventory",
+    "neighbors",
+    "entities.items",
+    "entities.characters",
+    "description.public",
+    "memory.log",
+}
+
+FORBIDDEN_MUTATION_FIELDS = {
+    "is_player",
+    "is_portable",
+    "id",
 }
 
 # StateEvolution V2 response schema（用于LLM输出约束）
@@ -595,17 +610,30 @@ class StateEvolution:
                     return self._create_fallback_output(f"推演失败: {error_msg}")
 
                 data = response.get("data", {})
-                output = self._parse_output(data, request_id=request_id)
+                output, parse_errors = self._parse_output(
+                    data,
+                    request_id=request_id,
+                    game_state=game_state,
+                )
 
                 if not game_state:
+                    if parse_errors:
+                        llm_erro = str(data.get("erro", "")).strip()
+                        lines = parse_errors[:3]
+                        if llm_erro:
+                            lines.append(f"LLM erro字段: {llm_erro}")
+                        error_feedback = "；".join(lines)
+                        logger.warning(f"状态推演输出解析失败(第{attempt}次): {error_feedback}")
+                        continue
                     return output
 
                 validation_errors = self.validate_changes(output.changes, game_state)
-                if not validation_errors:
+                combined_errors = parse_errors + validation_errors
+                if not combined_errors:
                     return output
 
                 llm_erro = str(data.get("erro", "")).strip()
-                lines = validation_errors[:3]
+                lines = combined_errors[:3]
                 if llm_erro:
                     lines.append(f"LLM erro字段: {llm_erro}")
                 error_feedback = "；".join(lines)
@@ -630,7 +658,12 @@ class StateEvolution:
             "请根据以上错误反馈修正输出，返回合法JSON，且state_changes必须只引用当前存在的实体与字段。"
         )
     
-    def _parse_output(self, data: Dict[str, Any], request_id: str = "") -> StateEvolutionOutput:
+    def _parse_output(
+        self,
+        data: Dict[str, Any],
+        request_id: str = "",
+        game_state: Optional[GameState] = None,
+    ) -> Tuple[StateEvolutionOutput, List[str]]:
         """
         解析LLM输出为StateEvolutionOutput
         
@@ -647,24 +680,46 @@ class StateEvolution:
         if not isinstance(result, dict):
             raise ValueError("缺少 result 对象")
 
-        changes = []
+        changes: List[StateChange] = []
+        parse_errors: List[str] = []
         for change_data in result.get("state_changes", []):
             try:
-                # 将字符串operation转换为枚举
-                op_str = change_data.get("operation", "update")
-                operation = ChangeOperation(op_str)
+                field = str(change_data.get("field", "") or "").strip()
+                op_raw = str(change_data.get("operation", "") or "").strip().lower()
+
+                if not op_raw:
+                    if field == "location":
+                        op_raw = ChangeOperation.MOVE.value
+                    else:
+                        op_raw = ChangeOperation.UPDATE.value
+
+                try:
+                    operation = ChangeOperation(op_raw)
+                except ValueError:
+                    if field == "location":
+                        operation = ChangeOperation.MOVE
+                    else:
+                        raise ValueError(f"不支持的operation: {op_raw}")
                 
                 change = StateChange(
                     id=change_data.get("id", ""),
-                    field=change_data.get("field", ""),
+                    field=field,
                     operation=operation,
                     value=change_data.get("value")
                 )
-                changes.append(change)
+                normalized_change, normalize_notes = self._coerce_change_for_compat(change, game_state)
+                for note in normalize_notes:
+                    if note.startswith("不可兼容"):
+                        parse_errors.append(note)
+                    else:
+                        logger.info(note)
+                changes.append(normalized_change)
             except (ValueError, KeyError) as e:
-                logger.warning(f"解析变更项失败: {e}, 数据: {change_data}")
+                message = f"解析变更项失败: {e}, 数据: {change_data}"
+                parse_errors.append(message)
+                logger.warning(message)
                 continue
-        
+
         return StateEvolutionOutput(
             narrative=result.get("local_narrative", ""),
             changes=changes,
@@ -672,7 +727,101 @@ class StateEvolution:
             next_action_hint=((data.get("extensions") or {}).get("next_action_hint")),
             is_end=bool(((data.get("extensions") or {}).get("is_end", False))),
             end_narrative=str(((data.get("extensions") or {}).get("end_narrative", ""))),
-        )
+        ), parse_errors
+
+    def _resolve_location_target(self, entity_id: str, raw_value: Any, game_state: Optional[GameState]) -> str:
+        """Normalize location target IDs from fuzzy natural language values."""
+        if isinstance(raw_value, dict):
+            raw_value = raw_value.get("to")
+
+        value = str(raw_value or "").strip()
+        if not value or not game_state:
+            return value
+
+        if entity_id.startswith("char-") and value in game_state.maps:
+            return value
+        if entity_id.startswith("item-") and (value in game_state.maps or value in game_state.characters):
+            return value
+
+        player_map = game_state.get_current_map()
+        if player_map:
+            for one in player_map.neighbors:
+                direction = str(getattr(one, "direction", "") or "").strip()
+                if direction and value == direction:
+                    return one.id
+
+        for map_id, map_obj in game_state.maps.items():
+            map_name = str(getattr(map_obj, "name", "") or "").strip()
+            if map_name and value == map_name:
+                return map_id
+
+        return value
+
+    def _coerce_change_for_compat(
+        self,
+        change: StateChange,
+        game_state: Optional[GameState],
+    ) -> Tuple[StateChange, List[str]]:
+        """Coerce common LLM mistakes into safe operations before validation."""
+        notes: List[str] = []
+        operation = change.operation
+        field = change.field
+        value = change.value
+
+        if field == "location" and operation in {ChangeOperation.ADD, ChangeOperation.UPDATE}:
+            operation = ChangeOperation.MOVE
+            notes.append(
+                f"兼容修正: {change.id}.location 的 {change.operation.value} 已自动改为 move"
+            )
+
+        if operation == ChangeOperation.MOVE:
+            if field != "location":
+                notes.append(
+                    f"不可兼容: MOVE仅允许location字段，当前为 {change.id}.{field}"
+                )
+                return change, notes
+
+            if isinstance(value, list):
+                value = value[0] if value else ""
+
+            if isinstance(value, dict):
+                move_value = dict(value)
+                if "to" not in move_value:
+                    # 兼容常见错误key
+                    for key in ("target", "value", "location"):
+                        if key in move_value:
+                            move_value["to"] = move_value[key]
+                            notes.append(
+                                f"兼容修正: {change.id}.location 的 MOVE 目标字段已从 {key} 映射为 to"
+                            )
+                            break
+                if "to" in move_value:
+                    move_value["to"] = self._resolve_location_target(change.id, move_value.get("to"), game_state)
+                if "from" in move_value and move_value.get("from") is not None:
+                    move_value["from"] = self._resolve_location_target(change.id, move_value.get("from"), game_state)
+                value = move_value
+            else:
+                value = self._resolve_location_target(change.id, value, game_state)
+
+        if operation in {ChangeOperation.ADD, ChangeOperation.DELETE} and field == "location":
+            notes.append(f"不可兼容: {change.id}.location 不允许 {operation.value} 操作")
+            return change, notes
+
+        if operation == ChangeOperation.ADD and field in ALLOWED_LIST_MUTATION_FIELDS and isinstance(value, list):
+            # 兼容LLM误输出list，保持扁平化语义。
+            flattened: List[Any] = []
+            for one in value:
+                if isinstance(one, list):
+                    flattened.extend(one)
+                else:
+                    flattened.append(one)
+            value = flattened
+
+        return StateChange(id=change.id, field=field, operation=operation, value=value), notes
+
+    def _is_forbidden_field(self, field: str) -> bool:
+        parts = [one.strip() for one in field.split(".") if one.strip()]
+        return any(part in FORBIDDEN_MUTATION_FIELDS for part in parts)
     
     def _create_fallback_output(self, reason: str) -> StateEvolutionOutput:
         """
@@ -746,8 +895,16 @@ class StateEvolution:
                 errors.append(f"{prefix}: 字段路径为空")
                 continue
 
+            if self._is_forbidden_field(field):
+                errors.append(f"{prefix}: 字段禁止修改 '{field}'")
+                continue
+
             if not self._field_path_exists(entity, field):
                 errors.append(f"{prefix}: 字段路径不存在 '{field}'")
+                continue
+
+            if field == "location" and change.operation != ChangeOperation.MOVE:
+                errors.append(f"{prefix}: location字段必须使用MOVE操作")
                 continue
             
             # 根据操作类型进行额外验证
@@ -755,6 +912,9 @@ class StateEvolution:
                 if field not in ALLOWED_DELETE_LIST_FIELDS:
                     errors.append(f"{prefix}: DELETE仅允许作用于白名单列表字段 '{field}'")
             elif change.operation == ChangeOperation.ADD:
+                if field not in ALLOWED_LIST_MUTATION_FIELDS:
+                    errors.append(f"{prefix}: ADD仅允许作用于白名单列表字段 '{field}'")
+
                 # ADD操作通常用于列表类型的字段
                 if entity_id.startswith("char-") and field == "inventory":
                     if not isinstance(change.value, str):
@@ -774,13 +934,6 @@ class StateEvolution:
                             if item_id not in game_state.items:
                                 errors.append(f"{prefix}: inventory UPDATE 包含不存在物品 '{item_id}'")
 
-                if field == "location" and isinstance(change.value, str):
-                    if entity_id.startswith("char-") and change.value not in game_state.maps:
-                        errors.append(f"{prefix}: 角色目标位置不存在 '{change.value}'")
-                    if entity_id.startswith("item-") and (
-                        change.value not in game_state.maps and change.value not in game_state.characters
-                    ):
-                        errors.append(f"{prefix}: 物品目标位置不存在 '{change.value}'")
             elif change.operation == ChangeOperation.MOVE:
                 if field != "location":
                     errors.append(f"{prefix}: MOVE操作仅允许 field=location")

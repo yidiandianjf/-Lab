@@ -17,6 +17,8 @@ from typing import Optional, Dict, Any, List, Tuple, Iterable
 from pathlib import Path
 
 from src.data.io_system import IOSystem
+from src.utils.debug_logger import DebugLogger
+from src.utils.debug_config import DebugConfig
 from src.data.models import (
     Character, Item, Map, MapNeighbor, GameState, StateChange, ChangeOperation,
     DMAgentOutput, CheckInput, CheckOutput,
@@ -76,6 +78,8 @@ class GameEngine:
         db_path: str = "data/game.db",
         npc_response_mode: str = "unified",
         narrative_window: int = 5,
+        debug_config: Optional[DebugConfig] = None,
+        debug_config_path: Optional[str] = None,
     ):
         """
         初始化游戏引擎
@@ -87,6 +91,8 @@ class GameEngine:
             rule_system: 规则系统实例（可选）
             state_agent: 状态推演Agent实例（可选）
             db_path: 数据库路径
+            debug_config: Debug配置（可选，优先级最高）
+            debug_config_path: Debug配置文件路径（可选，默认为 debug_config.yaml）
         """
         # 初始化各子系统
         self.io = io_system or IOSystem(db_path=db_path, mode="sqlite")
@@ -94,6 +100,29 @@ class GameEngine:
         self.dm_agent = dm_agent or DMAgent()
         self.rule_system = rule_system or RuleSystem()
         self.state_agent = state_agent or StateEvolutionAgent()
+        
+        # 加载Debug配置（优先级：显式传入 > 配置文件 > 默认）
+        if debug_config is None:
+            try:
+                from src.utils.debug_config import load_config
+                debug_config = load_config(config_path=debug_config_path)
+            except Exception as e:
+                logger.debug(f"加载Debug配置失败，使用默认配置: {e}")
+                debug_config = None
+        
+        # 初始化DebugLogger
+        try:
+            self.debug_logger = DebugLogger(
+                config=debug_config,
+                world_name="",
+                player_id=""
+            )
+            # 如果配置启用，启用一致性检查
+            if debug_config is None or debug_config.enabled:
+                self.debug_logger.enable_consistency_checking(self.io)
+        except Exception as e:
+            logger.warning(f"DebugLogger初始化失败: {e}")
+            self.debug_logger = None
         
         # 游戏状态
         self.game_state = GameState()
@@ -183,6 +212,16 @@ class GameEngine:
             
             # 初始化回合
             self.game_state.turn_count = 1
+            
+            # 更新 DebugLogger 的世界名和玩家ID
+            if self.debug_logger:
+                try:
+                    self.debug_logger.world_name = bundle.world_name
+                    player = self.game_state.get_player()
+                    if player:
+                        self.debug_logger.player_id = player.id
+                except Exception as e:
+                    logger.debug(f"DebugLogger更新世界/玩家信息失败: {e}")
             
             logger.info("新游戏启动成功")
             return True
@@ -373,13 +412,35 @@ class GameEngine:
             "game_over": False
         }
         
+        # DebugLogger: 记录回合开始
+        if self.debug_logger:
+            try:
+                self.debug_logger.start_turn(user_input)
+                self.debug_logger.log_state_snapshot(self.game_state, "before")
+            except Exception as e:
+                logger.debug(f"DebugLogger记录回合开始失败: {e}")
+        
         try:
             # ===== Step 1: 回合开始 =====
             self._turn_start()
             self._begin_turn_trace()
             
             # ===== Step 2: 获取行动意图 =====
+            # DebugLogger: 记录 parse_input 阶段
+            if self.debug_logger:
+                try:
+                    self.debug_logger.start_phase("parse_input")
+                except Exception as e:
+                    logger.debug(f"DebugLogger记录阶段失败: {e}")
+            
             input_result = self.input_system.parse_input(user_input)
+            
+            # DebugLogger: 结束 parse_input 阶段
+            if self.debug_logger:
+                try:
+                    self.debug_logger.end_phase({"input_type": input_result.input_type.value if hasattr(input_result.input_type, 'value') else str(input_result.input_type)})
+                except Exception as e:
+                    logger.debug(f"DebugLogger记录阶段结束失败: {e}")
             
             # 如果是基础指令，直接处理
             if input_result.input_type == InputType.BASIC_COMMAND:
@@ -441,10 +502,27 @@ class GameEngine:
             natural_input = input_result.natural_input
             
             # ===== Step 3: DM Agent解析 =====
+            # DebugLogger: 记录 dm_processing 阶段
+            if self.debug_logger:
+                try:
+                    self.debug_logger.start_phase("dm_processing")
+                except Exception as e:
+                    logger.debug(f"DebugLogger记录阶段失败: {e}")
+            
             dm_output = self._dm_agent_parse(
                 natural_input,
                 npc_prelude_text="",
             )
+            
+            # DebugLogger: 结束 dm_processing 阶段
+            if self.debug_logger:
+                try:
+                    self.debug_logger.end_phase({
+                        "needs_check": dm_output.needs_check,
+                        "interaction_type": getattr(dm_output, "interaction_type", "action")
+                    })
+                except Exception as e:
+                    logger.debug(f"DebugLogger记录阶段结束失败: {e}")
             turn_intent = self._build_turn_intent_from_dm(natural_input, dm_output)
             interaction_type = str(getattr(dm_output, "interaction_type", "action") or "action")
             is_dialogue_turn = interaction_type in {"dialogue", "mixed"}
@@ -471,6 +549,13 @@ class GameEngine:
                 result["check_result"] = check_output
 
             # ===== Step 5: 状态推演系统 =====
+            # DebugLogger: 记录 state_evolution 阶段
+            if self.debug_logger:
+                try:
+                    self.debug_logger.start_phase("state_evolution")
+                except Exception as e:
+                    logger.debug(f"DebugLogger记录阶段失败: {e}")
+            
             evolution_result = None
             player_turn_resolution: Optional[TurnResolution] = None
             if has_player_action:
@@ -479,11 +564,33 @@ class GameEngine:
                     check_result=check_output,
                     player_resolution_anchor=player_resolution_anchor,
                 )
-                player_resolution_anchor = self._build_player_resolution_anchor(
-                    dm_output=dm_output,
-                    check_result=check_output,
-                    evolution_result=evolution_result,
-                )
+            
+            # DebugLogger: 记录状态变更提案
+            if self.debug_logger and evolution_result and evolution_result.changes:
+                try:
+                    self.debug_logger.log_state_changes_proposed(
+                        changes=evolution_result.changes,
+                        validation_result=None
+                    )
+                except Exception as e:
+                    logger.debug(f"DebugLogger记录状态变更提案失败: {e}")
+            
+            # DebugLogger: 结束 state_evolution 阶段
+            if self.debug_logger:
+                try:
+                    self.debug_logger.end_phase({
+                        "has_changes": bool(evolution_result and evolution_result.changes),
+                        "changes_count": len(evolution_result.changes) if evolution_result and evolution_result.changes else 0
+                    })
+                except Exception as e:
+                    logger.debug(f"DebugLogger记录阶段结束失败: {e}")
+
+            player_resolution_anchor = self._build_player_resolution_anchor(
+                dm_output=dm_output,
+                check_result=check_output,
+                evolution_result=evolution_result,
+            )
+            if has_player_action and evolution_result is not None:
                 player_turn_resolution = TurnResolution(
                     actor_id=self.game_state.player_id or "",
                     phase="player",
@@ -510,12 +617,36 @@ class GameEngine:
                 )
             
             # ===== Step 6: 应用状态变更 =====
+            # DebugLogger: 记录 apply_changes 阶段
+            if self.debug_logger:
+                try:
+                    self.debug_logger.start_phase("apply_changes")
+                except Exception as e:
+                    logger.debug(f"DebugLogger记录阶段失败: {e}")
+            
             if evolution_result and evolution_result.changes:
                 failures = self._apply_changes(evolution_result.changes)
                 if failures:
+                    # DebugLogger: 记录变更失败
+                    if self.debug_logger:
+                        try:
+                            self.debug_logger.log_state_changes_proposed(
+                                changes=evolution_result.changes,
+                                validation_result={"failures": failures}
+                            )
+                            self.debug_logger.end_phase({"status": "failed", "failures": failures})
+                        except Exception as e:
+                            logger.debug(f"DebugLogger记录失败: {e}")
                     result["success"] = False
                     result["response"] = f"状态变更失败: {failures[0]}"
                     return result
+            
+            # DebugLogger: 结束 apply_changes 阶段
+            if self.debug_logger:
+                try:
+                    self.debug_logger.end_phase({"status": "success"})
+                except Exception as e:
+                    logger.debug(f"DebugLogger记录阶段结束失败: {e}")
 
             if player_turn_resolution is not None:
                 self._current_turn_trace.append_step(
@@ -611,7 +742,26 @@ class GameEngine:
             self._turn_end(resolved=evolution_result.resolved if evolution_result else True)
             self._finalize_turn_trace(merged_narrative=merged_narrative)
             
+            # DebugLogger: 记录回合结束
+            if self.debug_logger:
+                try:
+                    self.debug_logger.log_state_snapshot(self.game_state, "after")
+                    self.debug_logger.end_turn(merged_narrative or result.get("response", ""))
+                except Exception as e:
+                    logger.debug(f"DebugLogger记录回合结束失败: {e}")
+            
         except Exception as e:
+            # DebugLogger: 记录错误
+            if self.debug_logger:
+                try:
+                    from src.utils.debug_types import EventType, LogLevel
+                    self.debug_logger._log_event(
+                        EventType.ERROR_OCCURRED,
+                        {"error": str(e), "phase": "process_input"},
+                        level=LogLevel.ERROR
+                    )
+                except Exception:
+                    pass
             logger.error(f"处理输入时发生错误: {e}")
             result["success"] = False
             result["response"] = f"系统错误: {str(e)}"
@@ -804,12 +954,43 @@ class GameEngine:
         Returns:
             DM Agent输出
         """
+        import time
+        start_time = time.time()
+        
+        # DebugLogger: 记录LLM请求
+        if self.debug_logger:
+            try:
+                prompt_preview = player_input[:500] if len(player_input) > 500 else player_input
+                self.debug_logger.log_llm_request(
+                    agent="dm_agent",
+                    prompt=prompt_preview,
+                    model=getattr(self.dm_agent.llm_service, 'model', 'unknown') if hasattr(self.dm_agent, 'llm_service') else 'unknown',
+                    tokens=0
+                )
+            except Exception as e:
+                logger.debug(f"DebugLogger记录LLM请求失败: {e}")
+        
         # 调用DM Agent（由DM内部构建上下文）
         dm_output = self.dm_agent.parse_intent(
             player_input=player_input,
             game_state=self.game_state,
             additional_context=self._build_dm_additional_context(npc_prelude_text=npc_prelude_text)
         )
+        
+        duration_ms = (time.time() - start_time) * 1000
+        
+        # DebugLogger: 记录LLM响应
+        if self.debug_logger:
+            try:
+                response_summary = f"needs_check={dm_output.needs_check}, action={dm_output.action_description[:100] if dm_output.action_description else ''}"
+                self.debug_logger.log_llm_response(
+                    agent="dm_agent",
+                    response=response_summary,
+                    duration_ms=duration_ms,
+                    tokens=0
+                )
+            except Exception as e:
+                logger.debug(f"DebugLogger记录LLM响应失败: {e}")
         
         logger.debug(f"DM Agent解析结果: needs_check={dm_output.needs_check}")
         return dm_output
@@ -886,10 +1067,26 @@ class GameEngine:
         Returns:
             状态推演结果
         """
+        import time
+        start_time = time.time()
+        
         world_view = self._world_view_builder.build(self.game_state, self.game_state.player_id or "")
         dialogue_memory = self._dialogue_memory_builder.build(self.dm_dialogue_log)
         narrative_memory = self._narrative_memory_builder.build(self._dump_narrative_context())
         turn_trace_view = self._turn_trace_context_builder.build_full(self._current_turn_trace)
+
+        # DebugLogger: 记录LLM请求
+        if self.debug_logger:
+            try:
+                action_desc = dm_output.action_description[:300] if dm_output.action_description else ""
+                self.debug_logger.log_llm_request(
+                    agent="state_evolution",
+                    prompt=f"action: {action_desc}",
+                    model=getattr(self.state_agent.llm_service, 'model', 'unknown') if hasattr(self.state_agent, 'llm_service') else 'unknown',
+                    tokens=0
+                )
+            except Exception as e:
+                logger.debug(f"DebugLogger记录LLM请求失败: {e}")
 
         # 调用状态推演
         evolution_output = self.state_agent.evolve_player_action(
@@ -909,6 +1106,21 @@ class GameEngine:
             }
         )
         
+        duration_ms = (time.time() - start_time) * 1000
+        
+        # DebugLogger: 记录LLM响应和状态变更
+        if self.debug_logger:
+            try:
+                response_summary = f"changes={len(evolution_output.changes)}, narrative_len={len(evolution_output.narrative) if evolution_output.narrative else 0}"
+                self.debug_logger.log_llm_response(
+                    agent="state_evolution",
+                    response=response_summary,
+                    duration_ms=duration_ms,
+                    tokens=0
+                )
+            except Exception as e:
+                logger.debug(f"DebugLogger记录LLM响应失败: {e}")
+        
         logger.debug(f"状态推演完成，变更数: {len(evolution_output.changes)}")
         return evolution_output
     
@@ -923,9 +1135,9 @@ class GameEngine:
             失败信息列表，空列表表示全部成功
         """
         transaction_snapshot = self._capture_transaction_snapshot()
+        canonical_changes = self._canonicalize_change_batch(changes)
         failures: List[str] = []
-        for change in changes:
-            normalized_change = self._normalize_state_change(change)
+        for normalized_change in canonical_changes:
             error_code = self.io.apply_state_change(normalized_change)
             
             if error_code == 0:
@@ -933,14 +1145,127 @@ class GameEngine:
                 
                 # 同步更新内存中的游戏状态
                 self._sync_state_change(normalized_change)
+                
+                # DebugLogger: 记录状态变更应用结果（触发一致性检查）
+                if self.debug_logger:
+                    try:
+                        self.debug_logger.log_state_change_applied(
+                            change=normalized_change,
+                            error_code=error_code,
+                            cascading_effects=None,
+                            game_state=self.game_state
+                        )
+                    except Exception as e:
+                        logger.debug(f"DebugLogger记录状态变更失败: {e}")
             else:
                 error_message = f"{normalized_change.id}.{normalized_change.field} (错误码: {error_code})"
                 logger.warning(f"变更应用失败: {error_message}")
                 failures.append(error_message)
+                
+                # DebugLogger: 记录状态变更失败
+                if self.debug_logger:
+                    try:
+                        self.debug_logger.log_state_change_applied(
+                            change=normalized_change,
+                            error_code=error_code,
+                            cascading_effects=None,
+                            game_state=None
+                        )
+                    except Exception as e:
+                        logger.debug(f"DebugLogger记录状态变更失败: {e}")
+                
                 self._restore_transaction_snapshot(transaction_snapshot)
                 break
 
         return failures
+
+    def _canonicalize_change_batch(self, changes: List[StateChange]) -> List[StateChange]:
+        """Normalize and deduplicate a batch to avoid redundant dual-writes in one turn."""
+        normalized_changes = [self._normalize_state_change(change) for change in changes]
+
+        location_targets: Dict[str, str] = {}
+        for change in normalized_changes:
+            target = self._extract_location_target(change)
+            if target:
+                location_targets[change.id] = target
+
+        deduped_changes: List[StateChange] = []
+        seen_signatures = set()
+        for change in normalized_changes:
+            if self._is_redundant_relationship_change(change, location_targets):
+                continue
+
+            normalized_value = self._normalize_relationship_value(change.field, change.value)
+            canonical_change = change if normalized_value == change.value else StateChange(
+                id=change.id,
+                field=change.field,
+                operation=change.operation,
+                value=normalized_value,
+            )
+
+            signature = self._state_change_signature(canonical_change)
+            if signature in seen_signatures:
+                continue
+            seen_signatures.add(signature)
+            deduped_changes.append(canonical_change)
+
+        return deduped_changes
+
+    def _extract_location_target(self, change: StateChange) -> str:
+        if change.field != "location":
+            return ""
+        if change.operation not in {ChangeOperation.MOVE, ChangeOperation.UPDATE}:
+            return ""
+        if isinstance(change.value, dict):
+            return str(change.value.get("to", "") or "")
+        return str(change.value or "")
+
+    def _is_redundant_relationship_change(
+        self,
+        change: StateChange,
+        location_targets: Dict[str, str],
+    ) -> bool:
+        """Drop ADD relationships already implied by a location move in the same batch."""
+        if change.operation != ChangeOperation.ADD:
+            return False
+
+        if change.field == "inventory":
+            owner_id = change.id
+            for item_id in self._flatten_entity_ids(change.value):
+                if location_targets.get(item_id) != owner_id:
+                    return False
+            return True
+
+        if change.field == "entities.items":
+            map_id = change.id
+            for item_id in self._flatten_entity_ids(change.value):
+                if location_targets.get(item_id) != map_id:
+                    return False
+            return True
+
+        if change.field == "entities.characters":
+            map_id = change.id
+            for char_id in self._flatten_entity_ids(change.value):
+                if location_targets.get(char_id) != map_id:
+                    return False
+            return True
+
+        return False
+
+    def _normalize_relationship_value(self, field: str, value: Any) -> Any:
+        if field in {"inventory", "entities.items", "entities.characters"}:
+            normalized = self._flatten_entity_ids(value)
+            return normalized[0] if isinstance(value, str) and len(normalized) == 1 else normalized
+        return value
+
+    def _state_change_signature(self, change: StateChange) -> str:
+        """Build a stable signature for change-level deduplication."""
+        raw_value = change.value
+        try:
+            value_key = json.dumps(raw_value, ensure_ascii=False, sort_keys=True, default=str)
+        except TypeError:
+            value_key = str(raw_value)
+        return f"{change.id}|{change.field}|{change.operation.value}|{value_key}"
 
     def _capture_transaction_snapshot(self) -> Dict[str, Any]:
         """Capture a rollback snapshot before applying a batch of state changes."""
@@ -1050,6 +1375,15 @@ class GameEngine:
         normalized_value = change.value
         normalized_field = change.field
 
+        if change.field == "location" and change.operation in {ChangeOperation.ADD, ChangeOperation.UPDATE}:
+            normalized_operation = ChangeOperation.MOVE
+            logger.info(
+                "检测到location的%s操作，已收敛为MOVE: %s.%s",
+                change.operation.value,
+                resolved_id,
+                change.field,
+            )
+
         # DELETE仅允许白名单列表字段；若LLM对标量字段给出DELETE，收敛为UPDATE默认值。
         if change.operation == ChangeOperation.DELETE and change.field in {
             "location",
@@ -1076,13 +1410,32 @@ class GameEngine:
         ):
             if isinstance(normalized_value, dict):
                 location_value = dict(normalized_value)
+                if "to" not in location_value:
+                    for key in ("target", "value", "location"):
+                        if key in location_value:
+                            location_value["to"] = location_value.get(key)
+                            break
                 if location_value.get("to"):
                     location_value["to"] = self._resolve_map_id(location_value.get("to"))
                 if location_value.get("from"):
                     location_value["from"] = self._resolve_map_id(location_value.get("from"))
                 normalized_value = location_value
+            elif isinstance(normalized_value, list):
+                normalized_value = self._resolve_map_id(normalized_value[0] if normalized_value else "")
             else:
                 normalized_value = self._resolve_map_id(normalized_value)
+
+        if normalized_operation == ChangeOperation.MOVE:
+            if isinstance(normalized_value, dict):
+                move_value = dict(normalized_value)
+                if "to" not in move_value:
+                    for key in ("target", "value", "location"):
+                        if key in move_value:
+                            move_value["to"] = move_value.get(key)
+                            break
+                normalized_value = move_value
+            elif isinstance(normalized_value, list):
+                normalized_value = normalized_value[0] if normalized_value else ""
 
         if (
             resolved_id == change.id
@@ -1162,16 +1515,74 @@ class GameEngine:
         Args:
             change: 状态变更
         """
+        tracked_entity = None
+        previous_location: Optional[str] = None
+        previous_inventory: List[str] = []
+        previous_map_items: List[str] = []
+        previous_map_characters: List[str] = []
+
         # 根据变更类型更新内存对象
         if change.id in self.game_state.characters:
             char = self.game_state.characters[change.id]
+            tracked_entity = char
+            previous_location = char.location if hasattr(char, "location") else None
+            if change.field == "inventory":
+                previous_inventory = list(char.inventory or [])
             self._update_entity_field(char, change.field, change.value, change.operation)
         elif change.id in self.game_state.items:
             item = self.game_state.items[change.id]
+            tracked_entity = item
+            previous_location = item.location if hasattr(item, "location") else None
             self._update_entity_field(item, change.field, change.value, change.operation)
         elif change.id in self.game_state.maps:
             map_obj = self.game_state.maps[change.id]
+            tracked_entity = map_obj
+            if change.field == "entities.items":
+                previous_map_items = list(map_obj.entities.items or [])
+            elif change.field == "entities.characters":
+                previous_map_characters = list(map_obj.entities.characters or [])
             self._update_entity_field(map_obj, change.field, change.value, change.operation)
+
+        if (
+            tracked_entity is not None
+            and change.field == "location"
+            and change.operation in {ChangeOperation.MOVE, ChangeOperation.UPDATE}
+        ):
+            new_location = str(getattr(tracked_entity, "location", "") or "")
+            self._sync_location_relationships(change.id, previous_location or "", new_location)
+
+        if (
+            isinstance(tracked_entity, Character)
+            and change.field == "inventory"
+            and change.operation in {ChangeOperation.ADD, ChangeOperation.UPDATE, ChangeOperation.DELETE}
+        ):
+            self._sync_inventory_relationships(
+                owner_id=tracked_entity.id,
+                previous_inventory=previous_inventory,
+                current_inventory=list(tracked_entity.inventory or []),
+            )
+
+        if (
+            isinstance(tracked_entity, Map)
+            and change.field == "entities.items"
+            and change.operation in {ChangeOperation.ADD, ChangeOperation.UPDATE, ChangeOperation.DELETE}
+        ):
+            self._sync_map_items_relationships(
+                map_id=tracked_entity.id,
+                previous_items=previous_map_items,
+                current_items=list(tracked_entity.entities.items or []),
+            )
+
+        if (
+            isinstance(tracked_entity, Map)
+            and change.field == "entities.characters"
+            and change.operation in {ChangeOperation.ADD, ChangeOperation.UPDATE, ChangeOperation.DELETE}
+        ):
+            self._sync_map_characters_relationships(
+                map_id=tracked_entity.id,
+                previous_characters=previous_map_characters,
+                current_characters=list(tracked_entity.entities.characters or []),
+            )
 
         if (
             change.id == self.game_state.player_id
@@ -1185,6 +1596,144 @@ class GameEngine:
                 target = change.value
             if target:
                 self.game_state.current_scene_id = target
+
+    def _remove_id_from_list(self, target_list: Any, entity_id: str) -> None:
+        if not isinstance(target_list, list):
+            return
+        while entity_id in target_list:
+            target_list.remove(entity_id)
+
+    def _append_unique_id(self, target_list: Any, entity_id: str) -> None:
+        if not isinstance(target_list, list):
+            return
+        if entity_id not in target_list:
+            target_list.append(entity_id)
+
+    def _detach_item_from_all_containers(self, item_id: str) -> None:
+        for char in self.game_state.characters.values():
+            self._remove_id_from_list(char.inventory, item_id)
+        for map_obj in self.game_state.maps.values():
+            self._remove_id_from_list(map_obj.entities.items, item_id)
+
+    def _detach_character_from_all_maps(self, char_id: str) -> None:
+        for map_obj in self.game_state.maps.values():
+            self._remove_id_from_list(map_obj.entities.characters, char_id)
+
+    def _sync_location_relationships(self, entity_id: str, previous_location: str, new_location: str) -> None:
+        """Keep map entities and inventories aligned with entity.location in memory."""
+        if entity_id.startswith("char-"):
+            self._detach_character_from_all_maps(entity_id)
+            target_map = self.game_state.maps.get(new_location)
+            if target_map:
+                self._append_unique_id(target_map.entities.characters, entity_id)
+            return
+
+        if entity_id.startswith("item-"):
+            self._detach_item_from_all_containers(entity_id)
+
+            target_char = self.game_state.characters.get(new_location)
+            if target_char:
+                self._append_unique_id(target_char.inventory, entity_id)
+                return
+
+            target_map = self.game_state.maps.get(new_location)
+            if target_map:
+                self._append_unique_id(target_map.entities.items, entity_id)
+                return
+
+    def _sync_inventory_relationships(
+        self,
+        owner_id: str,
+        previous_inventory: List[str],
+        current_inventory: List[str],
+    ) -> None:
+        previous = set(self._flatten_entity_ids(previous_inventory))
+        current = set(self._flatten_entity_ids(current_inventory))
+
+        added = current - previous
+        removed = previous - current
+
+        for item_id in added:
+            item = self.game_state.items.get(item_id)
+            if not item:
+                continue
+            self._detach_item_from_all_containers(item_id)
+            item.location = owner_id
+            owner = self.game_state.characters.get(owner_id)
+            if owner:
+                self._append_unique_id(owner.inventory, item_id)
+
+        for item_id in removed:
+            item = self.game_state.items.get(item_id)
+            if not item:
+                continue
+            if item.location == owner_id:
+                item.location = ""
+            self._detach_item_from_all_containers(item_id)
+
+    def _sync_map_items_relationships(
+        self,
+        map_id: str,
+        previous_items: List[str],
+        current_items: List[str],
+    ) -> None:
+        previous = set(self._flatten_entity_ids(previous_items))
+        current = set(self._flatten_entity_ids(current_items))
+
+        added = current - previous
+        removed = previous - current
+
+        target_map = self.game_state.maps.get(map_id)
+        if not target_map:
+            return
+
+        for item_id in added:
+            item = self.game_state.items.get(item_id)
+            if not item:
+                continue
+            self._detach_item_from_all_containers(item_id)
+            item.location = map_id
+            self._append_unique_id(target_map.entities.items, item_id)
+
+        for item_id in removed:
+            item = self.game_state.items.get(item_id)
+            if not item:
+                continue
+            if item.location == map_id:
+                item.location = ""
+            self._detach_item_from_all_containers(item_id)
+
+    def _sync_map_characters_relationships(
+        self,
+        map_id: str,
+        previous_characters: List[str],
+        current_characters: List[str],
+    ) -> None:
+        previous = set(self._flatten_entity_ids(previous_characters))
+        current = set(self._flatten_entity_ids(current_characters))
+
+        added = current - previous
+        removed = previous - current
+
+        target_map = self.game_state.maps.get(map_id)
+        if not target_map:
+            return
+
+        for char_id in added:
+            char = self.game_state.characters.get(char_id)
+            if not char:
+                continue
+            self._detach_character_from_all_maps(char_id)
+            char.location = map_id
+            self._append_unique_id(target_map.entities.characters, char_id)
+
+        for char_id in removed:
+            char = self.game_state.characters.get(char_id)
+            if not char:
+                continue
+            if char.location == map_id:
+                char.location = ""
+            self._detach_character_from_all_maps(char_id)
     
     def _update_entity_field(self, entity: Any, field: str, value: Any, operation: ChangeOperation):
         """按操作类型更新实体字段。"""
@@ -1201,6 +1750,8 @@ class GameEngine:
             if operation == ChangeOperation.UPDATE:
                 if field == "neighbors":
                     setattr(current, final_field, self._normalize_neighbors_value(value))
+                elif field in {"inventory", "entities.items", "entities.characters"}:
+                    setattr(current, final_field, self._flatten_entity_ids(value))
                 else:
                     setattr(current, final_field, value)
             elif operation == ChangeOperation.MOVE:
@@ -1219,6 +1770,9 @@ class GameEngine:
                 if isinstance(target, list):
                     if field == "neighbors":
                         target.extend(self._normalize_neighbors_value(value))
+                    elif field in {"inventory", "entities.items", "entities.characters"}:
+                        for one in self._flatten_entity_ids(value):
+                            self._append_unique_id(target, one)
                     elif isinstance(value, list):
                         target.extend(value)
                     else:
@@ -1469,13 +2023,20 @@ class GameEngine:
         if self.npc_director and hasattr(self.npc_director, "decide_actions"):
             try:
                 recent_events = list((self._dump_narrative_context() or {}).get("recent_events", []))
+                narrative_context = self._get_narrative_context_for_llm()
+                if player_resolution_anchor:
+                    anchor_text = json.dumps(player_resolution_anchor, ensure_ascii=False)
+                    if narrative_context:
+                        narrative_context = f"{narrative_context}\n\nPlayerResolutionAnchor: {anchor_text}"
+                    else:
+                        narrative_context = f"PlayerResolutionAnchor: {anchor_text}"
                 decision = self.npc_director.decide_actions(
                     npc_ids=deduped_ids,
                     game_state=self.game_state,
                     player_intent=dm_output,
                     trigger_source=trigger,
                     recent_events=recent_events,
-                    narrative_context=self._get_narrative_context_for_llm(),
+                    narrative_context=narrative_context,
                 )
                 actions = getattr(decision, "actions", {}) or {}
                 for npc_id, action in actions.items():
@@ -1638,21 +2199,26 @@ class GameEngine:
             "narrative_context": self._dump_narrative_context(),
         }
 
-    def _flatten_entity_ids(self, raw_ids: Iterable[Any]) -> List[str]:
+    def _flatten_entity_ids(self, raw_ids: Any) -> List[str]:
         """扁平化实体ID列表，忽略非字符串值，避免嵌套list污染后续流程。"""
         result: List[str] = []
         seen = set()
-        for value in list(raw_ids or []):
+
+        def _append(value: Any) -> None:
             if isinstance(value, str):
-                if value not in seen:
-                    seen.add(value)
-                    result.append(value)
+                normalized = value.strip()
+                if normalized and normalized not in seen:
+                    seen.add(normalized)
+                    result.append(normalized)
             elif isinstance(value, list):
                 for inner in value:
-                    if isinstance(inner, str):
-                        if inner not in seen:
-                            seen.add(inner)
-                            result.append(inner)
+                    _append(inner)
+
+        if isinstance(raw_ids, list):
+            for value in raw_ids:
+                _append(value)
+        else:
+            _append(raw_ids)
         return result
 
     def _append_narrative_event(
@@ -1838,6 +2404,21 @@ class GameEngine:
     def get_current_narrative(self) -> str:
         """获取当前叙事"""
         return self._current_narrative
+    
+    def end_session(self) -> Optional[Any]:
+        """结束会话，记录最终状态和日志。
+        
+        Returns:
+            会话摘要（如果DebugLogger可用）
+        """
+        summary = None
+        if self.debug_logger:
+            try:
+                summary = self.debug_logger.end_session(self.game_state)
+                logger.info(f"会话结束，共 {summary.total_turns} 回合，{summary.total_llm_calls} 次LLM调用")
+            except Exception as e:
+                logger.warning(f"DebugLogger结束会话失败: {e}")
+        return summary
 
     def _extract_npc_intent_from_plan(self, action_plan: Any) -> str:
         """Extract intent description from NPC action plan."""
