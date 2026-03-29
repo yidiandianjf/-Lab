@@ -1,0 +1,34 @@
+{
+  "id": "map-corridor-01",
+  "name": "教学楼走廊",
+  "parent_id": "map-school-building",
+  "description": {
+    "public": [
+      {
+        "description": "一条长长的走廊，两侧是一间间教室的门窗。墙上贴着各种通知和光荣榜，地板是光滑的水磨石，反射着头顶日光灯的光线。"
+      }
+    ],
+    "hint": "连接各个场所的枢纽，也是偶遇和跟踪的高发地带。龚渝媛可能会在这里故意放慢脚步，等待玩家追上来。"
+  },
+  "neighbors": [
+    {
+      "id": "map-classroom-01",
+      "direction": "西",
+      "description": "高三(2)班的教室门"
+    },
+    {
+      "id": "map-teacher-office",
+      "direction": "北",
+      "description": "教师办公室的门"
+    },
+    {
+      "id": "map-sports-field",
+      "direction": "东",
+      "description": "通往操场的楼梯"
+    }
+  ],
+  "entities": {
+    "characters": [],
+    "items": []
+  }
+}

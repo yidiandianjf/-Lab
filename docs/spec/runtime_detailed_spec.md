@@ -1,8 +1,8 @@
 # COC文字冒险游戏引擎 - 运行时详细规范
 
-> 版本：v1.0  
-> 状态：正式版  
-> 日期：2026-03-24  
+> 版本：v1.1  
+> 状态：已更新（与代码实现同步）  
+> 日期：2026-03-29  
 > 适用范围：当前仓库代码所体现的实际运行时行为  
 > 代码基线：以 `src/` 与 `tests/` 为准
 
@@ -45,14 +45,14 @@
 
 | 模块 | 文件路径 | 关键行号 |
 |------|----------|----------|
-| GameEngine | `src/engine/game_engine.py` | 50-1890 |
-| 数据模型 | `src/data/models.py` | 1-413 |
-| 输入系统 | `src/agent/input_system.py` | 41-833 |
-| NPC导演 | `src/agent/npc/npc_director.py` | 62-243 |
-| 叙事上下文 | `src/narrative/narrative_context.py` | 31-164 |
-| 叙事合并 | `src/narrative/narrative_merger.py` | 12-81 |
-| 世界加载 | `src/data/init/world_loader.py` | 22-474 |
+| GameEngine | `src/engine/game_engine.py` | 60-2700 |
+| 数据模型 | `src/data/models.py` | 1-625 |
+| 输入系统 | `src/agent/input_system.py` | 41-831 |
+| NPC导演 | `src/agent/npc/npc_director.py` | 1-310 |
+| 叙事合并 | `src/narrative/narrative_merger.py` | 1-230 |
+| 世界加载 | `src/data/init/world_loader.py` | 1-474 |
 | IO系统 | `src/data/io_system.py` | 68-981 |
+| 上下文构建器 | `src/engine/context_builders.py` | 1-156 |
 
 ---
 
@@ -159,6 +159,7 @@ class Map(BaseModel):
 ```python
 class Description(BaseModel):
     public: List[Dict[str, str]]  # 公开描述列表
+    add: List[Dict[str,str]] #修改建议:将公开描述和增加描述分离
     hint: str                     # AI专用隐藏提示
 ```
 
@@ -180,6 +181,7 @@ class ChangeOperation(str, Enum):
     UPDATE = "update"    # 更新字段
     ADD = "add"          # 向列表添加
     DELETE = "del"       # 从列表删除或置空
+    MOVE = "move"        # 移动操作（主要用于location字段）
 ```
 
 ### 3.4 游戏状态模型
@@ -194,6 +196,149 @@ class GameState(BaseModel):
     turn_order: List[str]                # 行动顺序列表
     turn_count: int                      # 当前回合数
     is_ended: bool                       # 游戏是否结束
+```
+
+### 3.5 Phase 1 新协议模型（v2.0）
+
+#### 3.5.1 意图解释模型
+
+```python
+class TurnIntent(BaseModel):
+    """E3: 意图解释"""
+    actor_id: str
+    raw_input_text: str          # E2: 原始输入
+    intent_text: str             # 系统解释
+    interaction_type: Literal["action", "dialogue", "mixed"]
+    check_plan: Optional[CheckPlan]
+    activation_hint: ActivationHint
+
+class CheckPlan(BaseModel):
+    """E4: 检定计划"""
+    check_needed: bool
+    check_type: Optional[str]
+    attributes: Optional[List[str]]
+    target_id: Optional[str]
+    difficulty: Optional[str]
+
+class ActivationHint(BaseModel):
+    """NPC激活建议"""
+    response_needed_hint: bool
+    preferred_actor_id: Optional[str]
+    npc_intent_hint: Optional[str]
+    candidate_npc_ids_hint: Optional[List[str]]
+```
+
+#### 3.5.2 步骤结算模型
+
+```python
+class TurnResolution(BaseModel):
+    """E5: 步骤结算"""
+    actor_id: str
+    phase: Literal["player", "npc"]
+    intent_text: str
+    check_result: Optional[CheckOutput]
+    state_changes: List[StateChange]
+    local_narrative: str
+    outcome: OutcomeSummary
+
+class OutcomeSummary(BaseModel):
+    """步骤结果摘要"""
+    action_succeeded: bool
+    outcome_type: str
+    consequence_tags: List[str] = Field(default_factory=list)
+
+class TurnStep(BaseModel):
+    """E6: 回合步骤"""
+    step_id: str
+    turn_id: int
+    actor_id: str
+    phase: Literal["player", "npc"]
+    trigger_source: str
+    intent: TurnIntent
+    resolution: TurnResolution
+    timestamp: datetime
+
+class TurnTrace(BaseModel):
+    """E6: 回合因果链（关键缺失要素）"""
+    turn_id: int
+    steps: List[TurnStep]
+    
+    def append_step(self, step: TurnStep) -> None:
+        """NPC执行后立即追加，供后续NPC读取"""
+        
+    def get_steps_for_actor(self, actor_id: str) -> List[TurnStep]:
+        """获取特定角色的步骤历史"""
+```
+
+#### 3.5.3 上下文视图模型
+
+```python
+class WorldStateView(BaseModel):
+    """E1: 受控世界视图"""
+    current_map: Optional[Dict[str, Any]]
+    nearby_characters: List[Dict[str, Any]]
+    nearby_items: List[Dict[str, Any]]
+    player_state: Optional[Dict[str, Any]]
+    available_exits: List[Dict[str, Any]]
+
+class DialogueMemoryEntry(BaseModel):
+    """结构化对话记忆条目"""
+    speaker: str
+    content: str
+
+class DialogueMemoryView(BaseModel):
+    """E8: 对话记忆视图"""
+    recent_dialogues: List[DialogueMemoryEntry]
+
+class NarrativeMemoryView(BaseModel):
+    """E8: 叙事记忆视图"""
+    summary_lines: List[str]
+    key_facts: List[str]
+    stable_facts: List[str]
+
+class TurnTraceView(BaseModel):
+    """E6: 面向推理侧的回合因果链视图"""
+    turn_id: int
+    steps: List[TurnStep]
+```
+
+#### 3.5.4 叙事合并v2协议
+
+```python
+class NarrativeMergerInputV2(BaseModel):
+    """Phase 6: 叙事合并输入协议"""
+    turn_trace_steps: List[TurnStep]
+    turn_truth_anchor: Dict[str, Any]
+    narrative_memory: NarrativeMemoryView
+
+class NarrativeMergerOutputV2(BaseModel):
+    """Phase 6: 叙事合并输出协议"""
+    merged_narrative: str
+    turn_summary: str
+    new_key_facts: List[str]
+    dialogue_updates: List[DialogueMemoryEntry]
+
+class TurnTraceDigest(BaseModel):
+    """Phase 7: 持久化用回合链摘要"""
+    turn_id: int
+    summary: str
+    actor_ids: List[str]
+```
+
+#### 3.5.5 LLM请求信封v2
+
+```python
+class LLMRequestEnvelopeV2(BaseModel):
+    """Generic V2 request envelope for LLM-facing protocols"""
+    schema_version: str = Field(default="2.0")
+    request_id: str
+    turn_id: int
+    phase: str
+    source: str = Field(default="engine")
+    payload: Dict[str, Any]
+    constraints: Dict[str, Any]
+    memory_policy: Dict[str, Any]
+    extensions: Dict[str, Any]
 ```
 
 ---
@@ -224,10 +369,11 @@ def new_game(world_name: str = "mysterious_library") -> bool
 ```
 
 **流程**：
-1. 清空现有状态
+1. 调用 `io.clear_runtime_store()` 清空运行库
 2. 调用 `WorldLoader` 加载世界配置
 3. 应用世界级配置（`apply_world_settings`）
 4. 初始化 `turn_count = 1`
+5. 初始化 `TurnTrace` 和上下文构建器
 
 #### 4.2.2 存档加载
 
@@ -239,11 +385,10 @@ def load_game(save_name: str = "auto_save") -> bool
 - `GameState` 完整状态
 - `dm_dialogue_log` 对话历史
 - `narrative_context` 叙事上下文
+- `recent_turn_trace_digests` 回合链摘要（v2新增）
 - `world_metadata` 世界元数据
-
-**兼容处理**：
-- `world_metadata` 缺失时从旧字段回退重建
-- narrative snapshot 恢复时兼容旧 `summary` 到 `summary_lines`
+- `dialogue_memory` 对话记忆（v2新增）
+- `narrative_memory` 叙事记忆（v2新增）
 
 #### 4.2.3 存档保存
 
@@ -255,7 +400,10 @@ def save_game(save_name: str = "auto_save") -> bool
 - `GameState` 序列化数据
 - `dm_dialogue_log` 对话记录
 - `narrative_context` 状态快照
-- `save_version` 版本标记
+- `dialogue_memory` 对话记忆（v2新增）
+- `narrative_memory` 叙事记忆（v2新增）
+- `recent_turn_trace_digests` 回合链摘要（v2新增）
+- `save_version` 版本标记（v2 = 2）
 - `world_metadata` 世界元数据
 
 ### 4.3 核心游戏循环
@@ -277,7 +425,7 @@ def process_input(self, user_input: str) -> Dict[str, Any]
 }
 ```
 
-#### 4.3.2 完整回合流程
+#### 4.3.2 完整回合流程（v2更新）
 
 ```
 Step 1: _turn_start()
@@ -285,45 +433,59 @@ Step 1: _turn_start()
         └── 初始化/维护行动队列
         └── 确定当前行动者
 
-Step 2: InputSystem.parse_input()
+Step 2: _begin_turn_trace()
+        └── 初始化本回合的 TurnTrace
+
+Step 3: InputSystem.parse_input()
         └── 区分基础命令 vs 自然语言
         └── 基础命令直接执行并返回
 
-Step 3: DMAgent.parse_intent()
-        └── 解析玩家意图
+Step 4: DMAgent.parse_intent()
+        └── 解析玩家意图（输出包含 interaction_type）
         └── 判定是否需要鉴定
         └── 判定是否需要NPC响应
 
-Step 4: RuleSystem.execute_check() (可选)
+Step 5: _build_turn_intent_from_dm()
+        └── 将 DMAgentOutput 转换为 TurnIntent
+
+Step 6: RuleSystem.execute_check() (可选)
         └── 执行规则鉴定
         └── 返回 CheckOutput
 
-Step 5: StateEvolution.evolve_player_action()
+Step 7: StateEvolution.evolve_player_action()
         └── 生成叙事文本
         └── 生成状态变更列表
         └── 判定是否触发结局
+        └── 使用 WorldStateView/DialogueMemoryView/NarrativeMemoryView/TurnTraceView
 
-Step 6: _apply_changes()
+Step 8: _apply_changes()
         └── 批量应用状态变更
         └── 失败时回滚事务
 
-Step 7: _process_unified_npc_response()
-        └── NPCDirector 规划NPC行动
-        └── StateEvolution 推演NPC行动
-        └── 应用NPC状态变更
+Step 9: 组装 player_turn_resolution 并写入 TurnTrace
 
-Step 8: _merge_turn_narratives()
-        └── 合并玩家/NPC叙事片段
-        └── 生成统一回合叙事
+Step 10: _process_unified_npc_response()
+         └── NPCDirector 规划NPC行动
+         └── StateEvolution 推演NPC行动
+         └── 应用NPC状态变更
+         └── 将NPC步骤写入 TurnTrace
 
-Step 9: 结局判定
-        └── StateEvolutionOutput.is_end
-        └── state_agent.check_end_condition()
-        └── 配置化结局规则兜底
+Step 11: _merge_turn_narratives()
+         └── 使用 NarrativeMerger.merge_v2()（基于 TurnTrace）
+         └── 或降级到纯文本拼接
 
-Step 10: _turn_end()
+Step 12: 结局判定
+         └── StateEvolutionOutput.is_end
+         └── state_agent.check_end_condition()
+         └── 配置化结局规则兜底
+
+Step 13: _turn_end()
          └── 更新行动队列
          └── 增加回合数
+
+Step 14: _finalize_turn_trace()
+         └── 生成本回合摘要
+         └── 保存到 recent_turn_trace_digests
 ```
 
 ### 4.4 事务与回滚
@@ -333,14 +495,14 @@ Step 10: _turn_end()
 ```python
 def _apply_changes(self, changes: List[StateChange]) -> List[str]:
     transaction_snapshot = self._capture_transaction_snapshot()
+    canonical_changes = self._canonicalize_change_batch(changes)
     failures: List[str] = []
     
-    for change in changes:
-        normalized_change = self._normalize_state_change(change)
+    for normalized_change in canonical_changes:
         error_code = self.io.apply_state_change(normalized_change)
         
         if error_code == 0:
-            self._sync_state_change(normalized_change)  # 同步内存
+            self._sync_state_change(normalized_change)
         else:
             failures.append(error_message)
             self._restore_transaction_snapshot(transaction_snapshot)
@@ -349,7 +511,20 @@ def _apply_changes(self, changes: List[StateChange]) -> List[str]:
     return failures
 ```
 
-#### 4.4.2 回滚机制
+#### 4.4.2 变更归一化
+
+```python
+def _canonicalize_change_batch(self, changes: List[StateChange]) -> List[StateChange]:
+    """Normalize and deduplicate a batch to avoid redundant dual-writes in one turn."""
+```
+
+**功能**：
+- 归一化所有变更
+- 提取 location 目标映射
+- 去除冗余的关系变更（如已由 location 变更隐含的 inventory 变更）
+- 去重
+
+#### 4.4.3 回滚机制
 
 ```python
 def _restore_transaction_snapshot(self, snapshot: Dict[str, Any]) -> None:
@@ -361,6 +536,35 @@ def _restore_transaction_snapshot(self, snapshot: Dict[str, Any]) -> None:
     persist_method = getattr(self.io, "save_game_state", None)
     if callable(persist_method):
         persist_result = persist_method(self.game_state)
+```
+
+### 4.5 上下文构建器（Phase 2新增）
+
+```python
+# src/engine/context_builders.py
+
+class WorldStateViewBuilder:
+    """构建受控世界视图（E1）"""
+    def build(self, game_state: GameState, actor_id: str) -> WorldStateView:
+        pass
+
+class DialogueMemoryBuilder:
+    """构建对话记忆视图（E8）"""
+    def build(self, dialogue_log: List[Dict[str, str]]) -> DialogueMemoryView:
+        pass
+
+class NarrativeMemoryBuilder:
+    """构建叙事记忆视图（E8）"""
+    def build(self, narrative_payload: Dict[str, Any]) -> NarrativeMemoryView:
+        pass
+
+class TurnTraceContextBuilder:
+    """构建回合因果链视图（E6）"""
+    def build_for_npc(self, turn_trace: TurnTrace, npc_id: str) -> TurnTraceView:
+        """NPC看到的是：玩家步骤 + 已执行的前序NPC步骤"""
+        
+    def build_full(self, turn_trace: TurnTrace) -> TurnTraceView:
+        """构建完整视图"""
 ```
 
 ---
@@ -432,6 +636,7 @@ BASIC_COMMANDS = {
 
 ```python
 class DMAgentOutput(BaseModel):
+    interaction_type: Literal["action", "dialogue", "mixed"]  # 交互类型（v2新增）
     is_dialogue: bool                    # 是否为纯对话
     response_to_player: str              # 给玩家的回复
     needs_check: bool                    # 是否需要鉴定
@@ -446,17 +651,29 @@ class DMAgentOutput(BaseModel):
     actionable_npcs: List[str]           # 可行动NPC列表
 ```
 
-### 6.3 纯对话语义
+### 6.3 DMAgent V2 输出协议
 
 ```python
-if dm_output.is_dialogue:
-    result["response"] = dm_output.response_to_player
-    if not dm_output.npc_response_needed:
-        return result  # 直接结束
-    # 否则继续进入NPC follow-up
+class DMAgentOutputV2(BaseModel):
+    """Phase 3: 精简后的DM输出协议"""
+    turn_intent: TurnIntent
+    response_to_player: Optional[str]
 ```
 
-### 6.4 错误反馈与重试
+### 6.4 纯对话语义
+
+```python
+interaction_type = str(getattr(dm_output, "interaction_type", "action") or "action")
+is_dialogue_turn = interaction_type in {"dialogue", "mixed"}
+has_player_action = interaction_type in {"action", "mixed"}
+
+if is_dialogue_turn:
+    result["response"] = dm_output.response_to_player
+    if not dm_output.npc_response_needed and not has_player_action:
+        return result  # 直接结束
+```
+
+### 6.5 错误反馈与重试
 
 DM Agent支持最多2次重试，错误反馈通过 `erro` 字段传递：
 
@@ -555,6 +772,15 @@ def evolve_player_action(
 ) -> StateEvolutionOutput
 ```
 
+**additional_context 包含**（v2更新）：
+- `world_state_view`: WorldStateView 字典
+- `dialogue_memory`: DialogueMemoryView 字典
+- `narrative_memory`: NarrativeMemoryView 字典
+- `turn_trace_so_far`: TurnTraceView 字典
+- `player_resolution_anchor`: 玩家结算锚点
+- `npc_response_expected`: bool
+- `npc_response_actor_id`: str
+
 ### 8.4 NPC行动推演
 
 ```python
@@ -573,39 +799,38 @@ def evolve_npc_action(
 状态推演系统包含变更验证逻辑，确保：
 - 实体ID存在
 - 字段路径有效
-- 操作类型合法
+- 操作类型合法（支持 update/add/del/move）
 - 值类型正确
+- location 字段必须使用 MOVE 操作
 
 ---
 
 ## 9. NPC响应系统
 
-### 9.1 响应模式
+### 9.1 响应模式（已收敛）
 
 ```python
 class NpcResponseMode(str, Enum):
-    UNIFIED = "unified"    # 统一后置响应（默认）
-    QUEUE = "queue"        # 队列标签模式
-    REACTIVE = "reactive"  # 响应式触发模式
+    """NPC响应模式（收敛后仅保留 unified）"""
+    UNIFIED = "unified"    # 统一后置响应（唯一模式）
 ```
 
-### 9.2 模式语义
+**注意**：`queue` 和 `reactive` 模式已在代码中收敛为 `unified`，文档中提及的多种模式仅为兼容说明。
 
-| 模式 | 触发条件 | 说明 |
-|------|----------|------|
-| `unified` | 默认触发 | 玩家主流程后统一处理NPC响应 |
-| `queue` | 默认触发 | 同unified，trigger_source标记为queue |
-| `reactive` | `dm_output.npc_response_needed == true` | 仅在DM判定需要时触发 |
+### 9.2 NPC导演（NPCDirector）
 
-### 9.3 NPC导演（NPCDirector）
+#### 9.2.1 文件位置
 
-#### 9.3.1 核心职责
+- 主要实现：`src/agent/npc/npc_director.py`
+- 兼容导入：`src/npc/npc_director.py`（仅重导出）
+
+#### 9.2.2 核心职责
 
 - 生成结构化NPC行动计划
 - 支持批量NPC决策
 - 提供LLM和规则两种决策路径
 
-#### 9.3.2 输出模型
+#### 9.2.3 输出模型
 
 ```python
 class NPCActionForm(BaseModel):
@@ -623,7 +848,7 @@ class NPCActionDecision(BaseModel):
     rationale: str                       # 决策理由
 ```
 
-#### 9.3.3 行动类型
+#### 9.2.4 行动类型
 
 ```python
 class NPCActionType(str, Enum):
@@ -636,7 +861,7 @@ class NPCActionType(str, Enum):
     CUSTOM = "custom"
 ```
 
-#### 9.3.4 降级策略
+#### 9.2.5 降级策略
 
 ```python
 def _fallback_decision(...):
@@ -651,14 +876,14 @@ def _fallback_decision(...):
         intent_description = player_intent.npc_intent or "对玩家刚刚的行动做出回应"
 ```
 
-### 9.4 NPC候选选择顺序
+### 9.3 NPC候选选择顺序
 
 1. `dm_output.actionable_npcs` - DM建议的可行动NPC
 2. `dm_output.npc_actor_id` - DM指定的响应NPC
 3. `_action_queue` 中首个可行动NPC
 4. `_pick_default_npc_actor()` - 同场景可行动NPC兜底
 
-### 9.5 统一响应流程
+### 9.4 统一响应流程
 
 ```python
 def _process_unified_npc_response(...):
@@ -679,6 +904,8 @@ def _process_unified_npc_response(...):
         npc_output = self.state_agent.evolve_npc_action(...)
         # 应用变更
         failures = self._apply_changes(npc_output.changes)
+        # 写入 TurnTrace
+        self._current_turn_trace.append_step(TurnStep(...))
 ```
 
 ---
@@ -711,18 +938,13 @@ class NarrativeEvent(BaseModel):
     key_facts: List[str]
 ```
 
-#### 10.1.3 压缩策略
-
-1. **窗口溢出**：当 `recent_events` 超过 `window_size` 时，最旧事件移入摘要
-2. **摘要压缩**：事件文本超过120字符时截断并添加省略号
-3. **关键事实提取**：自动提取HP、SAN、物品、线索等关键词
-
 ### 10.2 叙事合并（NarrativeMerger）
 
-#### 10.2.1 合并策略
+#### 10.2.1 合并策略（v2更新）
 
 ```python
 def merge(self, fragments, game_state, context, truth_anchor):
+    """Legacy merge method"""
     cleaned = [f for f in fragments if f.get("text")]
     
     if not cleaned:
@@ -737,6 +959,14 @@ def merge(self, fragments, game_state, context, truth_anchor):
     
     # 降级：纯文本拼接
     return "\n".join(fragment["text"] for fragment in cleaned)
+
+def merge_v2(
+    self,
+    turn_trace_steps: List[TurnStep],
+    turn_truth_anchor: Optional[Dict[str, Any]] = None,
+    narrative_memory: Optional[NarrativeMemoryView] = None,
+) -> NarrativeMergerOutputV2:
+    """Phase 6 merger API, returns structured output"""
 ```
 
 #### 10.2.2 真值锚点
@@ -858,7 +1088,7 @@ config/world/<world_name>/
   "start_map_id": "map-room-library-01",
   "turn_order": ["char-player-01", "char-guard-01"],
   "narrative_window": 5,
-  "npc_response_mode": "reactive",
+  "npc_response_mode": "unified",
   "npc_director_use_llm": true,
   "narrative_merge_use_llm": true,
   "end_condition": "...",
@@ -926,6 +1156,8 @@ config/world/<world_name>/
 | `test_narrative_context.py` | 叙事上下文管理 |
 | `test_regression_flow.py` | 运行主流程、配置、兼容、回滚 |
 | `test_architecture_refactor_increment.py` | 架构重构增量测试 |
+| `test_llm_json_retry.py` | LLM JSON重试机制 |
+| `test_state_evolution_error_feedback.py` | 状态演化错误反馈 |
 
 ### 14.2 关键测试场景
 
@@ -961,27 +1193,48 @@ def test_transaction_rollback_on_failure():
 
 | 功能 | 文件 | 行号 |
 |------|------|------|
-| 主入口 | `game_engine.py` | 310 |
-| 回合开始 | `game_engine.py` | 547 |
-| 状态推演 | `game_engine.py` | 801 |
-| 变更应用 | `game_engine.py` | 838 |
-| 回合结束 | `game_engine.py` | 1117 |
+| 主入口 | `game_engine.py` | 388 |
+| 回合开始 | `game_engine.py` | 771 |
+| 回合Trace开始 | `game_engine.py` | 790 |
+| DM Agent解析 | `game_engine.py` | 947 |
+| 状态推演 | `game_engine.py` | 1054 |
+| 变更应用 | `game_engine.py` | 1127 |
+| 回合结束 | `game_engine.py` | 1841 |
+| 回合Trace结束 | `game_engine.py` | 794 |
 | NPC响应模式设置 | `game_engine.py` | 1352 |
-| 动态队列构建 | `game_engine.py` | 1368 |
-| 叙事合并 | `game_engine.py` | 1683 |
-| 统一NPC响应 | `game_engine.py` | 1705 |
+| 动态队列构建 | `game_engine.py` | 1917 |
+| 叙事合并 | `game_engine.py` | 1903 |
+| 统一NPC响应 | `game_engine.py` | 1986 |
 
 ### A.2 数据模型锚点
 
 | 模型 | 文件 | 行号 |
 |------|------|------|
-| StateChange | `models.py` | 228 |
-| NpcResponseMode | `models.py` | 261 |
-| DMAgentOutput | `models.py` | 300 |
-| StateEvolutionOutput | `models.py` | 334 |
-| GameState | `models.py` | 348 |
+| StateChange | `models.py` | 230 |
+| ChangeOperation | `models.py` | 222 |
+| NpcResponseMode | `models.py` | 263 |
+| DMAgentOutput | `models.py` | 480 |
+| DMAgentOutputV2 | `models.py` | 500 |
+| StateEvolutionOutput | `models.py` | 525 |
+| GameState | `models.py` | 539 |
+| TurnIntent | `models.py` | 309 |
+| TurnResolution | `models.py` | 328 |
+| TurnStep | `models.py` | 340 |
+| TurnTrace | `models.py` | 355 |
 | NPCActionForm | `npc_planning_models.py` | 40 |
 | NPCActionDecision | `npc_planning_models.py` | 60 |
+| NarrativeMergerInputV2 | `models.py` | 406 |
+| NarrativeMergerOutputV2 | `models.py` | 414 |
+| LLMRequestEnvelopeV2 | `models.py` | 441 |
+
+### A.3 上下文构建器锚点
+
+| 构建器 | 文件 | 行号 |
+|--------|------|------|
+| WorldStateViewBuilder | `context_builders.py` | 18 |
+| DialogueMemoryBuilder | `context_builders.py` | 109 |
+| NarrativeMemoryBuilder | `context_builders.py` | 124 |
+| TurnTraceContextBuilder | `context_builders.py` | 143 |
 
 ---
 
@@ -998,6 +1251,32 @@ def test_transaction_rollback_on_failure():
 | current_event | 角色当前回合事件，每轮开始时清空 |
 | turn_order | 行动顺序列表，存储于GameState |
 | action_queue | 动态行动队列，引擎内部使用 |
+| TurnTrace | 回合因果链，记录本回合所有步骤 |
+| TurnStep | 回合步骤，包含意图和结算 |
+| TurnIntent | 意图解释，E3要素 |
+| TurnResolution | 步骤结算，E5要素 |
+| WorldStateView | 受控世界视图，E1要素 |
+| DialogueMemoryView | 对话记忆视图，E8要素 |
+| NarrativeMemoryView | 叙事记忆视图，E8要素 |
+
+---
+
+## 附录C：版本变更记录
+
+### v1.0 (2026-03-24)
+- 初始版本
+
+### v1.1 (2026-03-29)
+- 添加 Phase 1 新协议模型（TurnIntent, TurnResolution, TurnStep, TurnTrace等）
+- 更新 NPC响应模式为 unified 单一模式
+- 添加 ChangeOperation.MOVE 操作
+- 更新 DMAgentOutput 添加 interaction_type 字段
+- 添加 DMAgentOutputV2, NarrativeMergerInputV2, NarrativeMergerOutputV2
+- 添加 LLMRequestEnvelopeV2 协议
+- 添加 context_builders.py 模块描述
+- 更新游戏循环流程，添加 TurnTrace 相关步骤
+- 更新存档格式，添加 dialogue_memory, narrative_memory, recent_turn_trace_digests
+- 更新测试基线列表
 
 ---
 

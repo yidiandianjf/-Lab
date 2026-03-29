@@ -1,0 +1,7 @@
+{
+  "id": "ending-escape",
+  "priority": 80,
+  "condition_expr": "all(player_at:map-corridor-01,has_item:item-old-photo-01)",
+  "is_bad_ending": false,
+  "end_narrative": "通过旧照片，你终于理解了龚渝媛行为背后的创伤。你决定不再参与她的情感游戏，而是选择保持距离。当你最后一次在走廊上遇到她时，你平静地对她点了点头，然后转身离开。龚渝媛站在原地，第一次露出了困惑的表情——她习惯了别人的追逐，却不知道如何应对这种平静的拒绝。你走出了她的世界，也走出了那个被操控的噩梦。虽然心中仍有遗憾，但你知道，你终于找回了自己。"
+}

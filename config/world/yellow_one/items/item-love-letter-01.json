@@ -1,0 +1,14 @@
+{
+  "id": "item-love-letter-01",
+  "name": "玩家的告白信",
+  "description": {
+    "public": [
+      {
+        "description": "一张折叠整齐的信纸，上面用蓝色钢笔写满了字，字迹有些颤抖。"
+      }
+    ],
+    "hint": "玩家写给龚渝媛的告白信，被她收藏起来作为'战利品'。如果被她公开展示，玩家的理智值会大幅下降。"
+  },
+  "location": "char-npc-gong",
+  "is_portable": false
+}

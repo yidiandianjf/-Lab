@@ -12,6 +12,6 @@
   "npc_response_mode": "reactive",
   "npc_director_use_llm": true,
   "narrative_merge_use_llm": true,
-  "end_condition": "在地下档案室找到真相并成功离开，或玩家直接逃离时结束游戏。",
+  "end_condition": "总是不结局，故事永远在继续。",
   "entry_scene_narrative": "深夜，你踏入神秘图书馆。潮湿纸张味、低沉脚步声与某种不安同时被听见。"
 }

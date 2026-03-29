@@ -1,0 +1,14 @@
+{
+  "id": "item-love-letter-02",
+  "name": "匿名告白信",
+  "description": {
+    "public": [
+      {
+        "description": "一张折成心形的信纸，边缘已经有些磨损，看起来被反复打开过很多次。"
+      }
+    ],
+    "hint": "龚渝媛小学时期收到的告白信，可能是她童年创伤的源头。了解这段历史可以帮助玩家理解她的行为模式，理智值+5。"
+  },
+  "location": "map-rooftop-01",
+  "is_portable": true
+}

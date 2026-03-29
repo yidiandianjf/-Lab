@@ -1,0 +1,7 @@
+{
+  "id": "ending-public-humiliation",
+  "priority": 90,
+  "condition_expr": "all(player_at:map-teacher-office,has_item:item-discipline-record-01)",
+  "is_bad_ending": true,
+  "end_narrative": "龚渝媛成功地将你的告白信复印给了全班同学，甚至闹到了教导处。张老师用失望的眼神看着你，同学们在你背后窃窃私语。你被贴上了'骚扰者'的标签，成为了全校的笑柄。而龚渝媛，依然保持着那个甜美的笑容，在人群中对你投来一个意味深长的眼神。你知道，这只是她众多胜利中的一次，而你已经永远失去了在这个学校的尊严。"
+}

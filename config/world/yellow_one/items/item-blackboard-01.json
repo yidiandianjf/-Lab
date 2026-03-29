@@ -1,0 +1,14 @@
+{
+  "id": "item-blackboard-01",
+  "name": "黑板",
+  "description": {
+    "public": [
+      {
+        "description": "一块绿色的黑板，上面还留着上节课的数学公式和几何图形，粉笔灰在板槽里积了一层。"
+      }
+    ],
+    "hint": "教室的黑板，龚渝媛可能会在这里留下一些只有玩家能看懂的暗示。"
+  },
+  "location": "map-classroom-01",
+  "is_portable": false
+}

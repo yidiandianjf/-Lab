@@ -1,0 +1,38 @@
+{
+  "id": "char-npc-wang",
+  "name": "王明",
+  "basic_info": "体育特长生，龚渝媛用来刺激玩家的工具人",
+  "description": {
+    "public": [
+      {
+        "description": "高大健壮的男生，身高185cm，留着短发，总是穿着运动服，笑起来很阳光但有时显得笨拙。"
+      }
+    ],
+    "hint": "单纯直率，对龚渝媛有好感但不太懂她的复杂心思，被利用来制造嫉妒和刺激玩家的情绪。"
+  },
+  "location": "map-sports-field",
+  "inventory": [
+    "item-basketball-01"
+  ],
+  "status": {
+    "hp": 20,
+    "max_hp": 20,
+    "san": 65,
+    "lucky": 55
+  },
+  "attributes": {
+    "str": 19,
+    "con": 10,
+    "siz": 19,
+    "dex": 18,
+    "app": 14,
+    "int": 10,
+    "pow": 12,
+    "edu": 11
+  },
+  "memory": {
+    "current_event": "准备参加篮球训练",
+    "log": []
+  },
+  "is_player": false
+}

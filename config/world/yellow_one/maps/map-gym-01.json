@@ -1,0 +1,26 @@
+{
+  "id": "map-gym-01",
+  "name": "体育馆",
+  "parent_id": "map-school-campus",
+  "description": {
+    "public": [
+      {
+        "description": "宽敞的室内体育馆，篮球架高高耸立，木地板上有着常年使用留下的划痕。看台上空无一人，只有篮球撞击地板的回声在空旷的空间里回荡。"
+      }
+    ],
+    "hint": "体育特长生们训练的场所，也是王明经常出没的地方。龚渝媛偶尔会来这里'看训练'，实则是为了刺激玩家。"
+  },
+  "neighbors": [
+    {
+      "id": "map-sports-field",
+      "direction": "南",
+      "description": "通往操场的侧门"
+    }
+  ],
+  "entities": {
+    "characters": [],
+    "items": [
+      "item-basketball-01"
+    ]
+  }
+}

@@ -1,11 +1,10 @@
 {
-  "api_key": "sk-c8ce7db131914189b362c6a07b4225e8",
-  "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-  "model": "qwen3.5-122b-a10b",
+  "api_key": "sk-gsrswlmwexdnnubtwunsvtttfrfdyqyhgpzdpohhllblvclg",
+  "base_url": "https://api.siliconflow.cn/v1",
+  "model": "Pro/MiniMaxAI/MiniMax-M2.5",
   "temperature": 0.0,
   "max_tokens": 4096,
   "timeout": 100.0,
   "enable_thinking": false,
   "structured_output": true
 }
-

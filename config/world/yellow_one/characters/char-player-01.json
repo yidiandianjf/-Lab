@@ -1,0 +1,36 @@
+{
+  "id": "char-player-01",
+  "name": "林哲",
+  "basic_info": "暗恋龚渝媛的高中男生，逐渐陷入她精心编织的情感陷阱",
+  "description": {
+    "public": [
+      {
+        "description": "一个普通的高中男生，身高175cm，中等身材，戴着黑框眼镜，总是穿着整洁的校服。眼神中带着一丝不安和迷茫，似乎总是在寻找着什么。"
+      }
+    ],
+    "hint": "玩家角色，性格敏感内向，渴望被关注和认可，容易被他人的情绪所影响。对龚渝媛既迷恋又恐惧，逐渐失去自我判断力。"
+  },
+  "location": "map-classroom-01",
+  "inventory": [],
+  "status": {
+    "hp": 15,
+    "max_hp": 20,
+    "san": 40,
+    "lucky": 35
+  },
+  "attributes": {
+    "str": 15,
+    "con": 14,
+    "siz": 16,
+    "dex": 13,
+    "app": 12,
+    "int": 16,
+    "pow": 10,
+    "edu": 15
+  },
+  "memory": {
+    "current_event": "第一次被龚渝媛的眼神捕捉",
+    "log": []
+  },
+  "is_player": true
+}
