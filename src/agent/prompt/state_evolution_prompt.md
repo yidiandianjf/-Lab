@@ -80,8 +80,8 @@ Last Updated: 2026-03-28
 - `raw_input_text`: 原始输入
 - `intent_text`: 意图描述
 - `interaction_type`: 交互类型
-- `check_plan`: 检定计划
-- `activation_hint`: 激活建议
+- ~~`check_plan`: 检定计划~~（已移除，StateEvolution不需要）
+- ~~`activation_hint`: 激活建议~~（已移除，StateEvolution不需要）
 
 #### 3.2.3 npc_action_plan（对象，npc阶段必填）
 来自NPC Director的输出，包含：
@@ -93,12 +93,12 @@ Last Updated: 2026-03-28
 - `check`: 检定信息
 
 #### 3.2.4 check_result（对象/null，可选）
-规则层输出的检定结果：
-- `result`: 结果字符串（如"成功"、"失败"、"大成功"、"大失败"）
-- `dice_roll`: 骰子点数（整数）
-- `target_value`: 目标值（整数）
-- `actor_value`: 行动者属性值（整数）
-- `detail`: 详细说明
+规则层输出的检定结果（已简化，只保留核心字段）：
+- `result`: 结果字符串（如"success"、"failure"）
+- ~~`dice_roll`: 骰子点数~~（已移除）
+- ~~`target_value`: 目标值~~（已移除）
+- ~~`actor_value`: 行动者属性值~~（已移除）
+- ~~`detail`: 详细说明~~（已移除）
 
 **为null的情况：** 无需检定或自动成功
 
@@ -118,9 +118,9 @@ Last Updated: 2026-03-28
 **用途：** 避免重复写入已执行结论，了解同回合其他NPC的行动。
 
 #### 3.2.7 player_turn_resolution（对象，npc阶段必填）
-玩家阶段的结算结果（NPC阶段时）：
-- 完整的TurnResolution结构
-- 用于NPC理解玩家行动的结果
+~~玩家阶段的结算结果（NPC阶段时）：~~（已移除，相关信息从turn_trace_so_far获取）
+- ~~完整的TurnResolution结构~~
+- ~~用于NPC理解玩家行动的结果~~
 
 #### 3.2.8 active_npc_id（字符串，npc阶段必填）
 当前正在执行的NPC的ID。
@@ -134,21 +134,28 @@ Last Updated: 2026-03-28
 
 **player阶段规则：**
 - `delete_whitelist`: 允许del操作的白名单字段列表
-  - 包括："inventory", "neighbors", "entities.items", "entities.characters", "description.public", "memory.log"
-- `update_rule`: {`must_use_existing_field`: true, `forbid_schema_break`: true}
-- `add_rule`: {`target_must_be_list`: true, `forbid_nested_list_add`: true}
+  - 包括："inventory", "neighbors", "entities.items", "entities.characters", ~~"description.public"~~, ~~"memory.log"~~, **"description.add"**
+  - **注意：description.public和memory.log已从白名单移除，只能通过description.add添加**
+- `update_rule`: {`must_use_existing_field`: true, `forbid_schema_break`: true, `forbidden_fields`: [...]}
+- `add_rule`: {`target_must_be_list`: true, `forbid_nested_list_add`: true, `allowed_fields`: [...]}
 - `delete_rule`: {`forbid_scalar_delete`: true, `coerce_scalar_delete_to_update`: true}
 - `move_rule`:
   - `field_must_be`: "location"
   - `char_target_must_be_map`: true（角色移动目标必须是地图）
   - `item_target_must_be_char_or_map`: true（物品移动目标必须是角色或地图）
+- `forbidden_fields`: 全局禁止编辑的字段列表
+  - 包括："is_player", "is_portable", "id", **"name", "basic_info", "description.public", "description.hint", "memory.log", "memory.current_event"**
+- `description_rule`:
+  - `can_only_add_to_add_field`: true（只能向description.add添加）
+  - `cannot_edit_public`: true（不能编辑description.public）
+  - `cannot_edit_hint`: true（不能编辑description.hint）
 
 **npc阶段规则：**
 - `must_not_override_player_truth`: true - 不得覆盖玩家阶段的事实
 - `must_not_duplicate_applied_changes`: true - 不得重复已应用的变更
 
 ### 3.4 memory_policy字段
-- `drift_anchor_required`: true - 需要防漂移锚点
+- ~~`drift_anchor_required`: true~~（已移除，由代码层控制记忆策略）
 - `max_generated_narrative_chars`: 800（player）/ 600（npc）- 叙事最大字符数
 
 ### 3.5 extensions字段（可选）
@@ -223,11 +230,14 @@ Last Updated: 2026-03-28
 **add（添加）：**
 - 用于向列表添加元素
 - 目标字段必须是列表类型
-- 示例：`{"id": "char-player-01", "field": "description.public", "operation": "add", "value": {"description": "新描述"}}`
+- **description字段特殊规则**：只能向`description.add`添加，不能直接向`description.public`添加
+- 示例：`{"id": "char-player-01", "field": "description.add", "operation": "add", "value": {"description": "新描述"}}`
+- 系统会在回合结束时自动将`description.add`的内容合并到`description.public`
 
 **del（删除）：**
 - 用于从列表删除元素
-- **仅限白名单字段：** inventory, neighbors, entities.items, entities.characters, description.public, memory.log
+- **仅限白名单字段：** inventory, neighbors, entities.items, entities.characters, ~~description.public~~, ~~memory.log~~, description.add
+- **注意：description.public和memory.log已从白名单移除，不可删除**
 - 示例：`{"id": "char-guard-01", "field": "inventory", "operation": "del", "value": "item-key-01"}`
 
 **move（移动）：**
@@ -346,9 +356,11 @@ Last Updated: 2026-03-28
 2. **state_changes合法性**
    - 所有id必须在world_state_view中存在
    - 所有field必须是真实存在的字段路径
-  - 禁止修改元数据字段：`is_player`、`is_portable`、`id`
+  - 禁止修改元数据字段：`is_player`、`is_portable`、`id`、**`name`、`basic_info`**
   - `location`字段必须使用`move`，不要使用`update/add/del`
-  - `add/del`仅允许白名单字段：`inventory`、`description.public`、`memory.log`、`neighbors`、`entities.characters`、`entities.items`
+  - `add/del`仅允许白名单字段：`inventory`、~~`description.public`~~、~~`memory.log`~~、`neighbors`、`entities.characters`、`entities.items`、**`description.add`**
+  - **description字段特殊规则**：只能向`description.add`添加，不能编辑`description.public`、`description.hint`
+  - **memory字段特殊规则**：不能编辑`memory.log`、`memory.current_event`
    - del操作仅限于白名单字段
    - move操作仅限于field="location"
   - 角色MOVE目标必须是`map-xxx`；物品MOVE目标必须是`char-xxx`或`map-xxx`

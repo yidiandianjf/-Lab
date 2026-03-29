@@ -1738,7 +1738,11 @@ class GameEngine:
             self._detach_character_from_all_maps(char_id)
     
     def _update_entity_field(self, entity: Any, field: str, value: Any, operation: ChangeOperation):
-        """按操作类型更新实体字段。"""
+        """按操作类型更新实体字段。
+        
+        特殊处理:
+        - description.add: 只能通过ADD操作添加新描述，系统会自动合并到public
+        """
         field_parts = field.split('.')
         
         try:
@@ -1754,6 +1758,10 @@ class GameEngine:
                     setattr(current, final_field, self._normalize_neighbors_value(value))
                 elif field in {"inventory", "entities.items", "entities.characters"}:
                     setattr(current, final_field, self._flatten_entity_ids(value))
+                elif field == "description.add":
+                    # UPDATE操作不允许用于description.add，必须使用ADD
+                    logger.warning("UPDATE操作不允许用于description.add，请使用ADD操作")
+                    return
                 else:
                     setattr(current, final_field, value)
             elif operation == ChangeOperation.MOVE:
@@ -1775,6 +1783,19 @@ class GameEngine:
                     elif field in {"inventory", "entities.items", "entities.characters"}:
                         for one in self._flatten_entity_ids(value):
                             self._append_unique_id(target, one)
+                    elif field == "description.add":
+                        # 处理description.add字段 - 添加新描述
+                        if isinstance(value, list):
+                            for desc in value:
+                                if isinstance(desc, dict) and desc.get("description"):
+                                    target.append(desc)
+                                elif isinstance(desc, str):
+                                    target.append({"description": desc})
+                        elif isinstance(value, dict) and value.get("description"):
+                            target.append(value)
+                        elif isinstance(value, str):
+                            target.append({"description": value})
+                        logger.info(f"向 {entity.id}.description.add 添加了新描述")
                     elif isinstance(value, list):
                         target.extend(value)
                     else:
@@ -1782,6 +1803,10 @@ class GameEngine:
                 else:
                     logger.warning(f"ADD操作目标不是列表: {field}")
             elif operation == ChangeOperation.DELETE:
+                if field == "description.add":
+                    # 不允许DELETE description.add，应该由系统定期合并
+                    logger.warning("DELETE操作不允许用于description.add")
+                    return
                 if isinstance(target, list):
                     if isinstance(value, list):
                         for one in value:
@@ -1807,6 +1832,29 @@ class GameEngine:
                 )
         except AttributeError as e:
             logger.warning(f"更新字段失败: {field}, {e}")
+
+    def _commit_description_adds(self) -> None:
+        """将所有实体的description.add合并到description.public，然后清空add。
+        
+        此方法应在回合结束时调用，将LLM添加的描述正式合并到公开描述中。
+        """
+        # 合并角色描述
+        for char in self.game_state.characters.values():
+            if char.description and char.description.add:
+                char.description.commit_add_to_public()
+                logger.debug(f"已合并角色 {char.id} 的描述add到public")
+        
+        # 合并物品描述
+        for item in self.game_state.items.values():
+            if item.description and item.description.add:
+                item.description.commit_add_to_public()
+                logger.debug(f"已合并物品 {item.id} 的描述add到public")
+        
+        # 合并地图描述
+        for map_obj in self.game_state.maps.values():
+            if map_obj.description and map_obj.description.add:
+                map_obj.description.commit_add_to_public()
+                logger.debug(f"已合并地图 {map_obj.id} 的描述add到public")
 
     def _normalize_neighbors_value(self, value: Any) -> List[MapNeighbor]:
         """Normalize map neighbors to MapNeighbor objects."""

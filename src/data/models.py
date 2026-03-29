@@ -15,12 +15,19 @@ from enum import Enum
 # ============================================================
 
 class Description(BaseModel):
-    """二级描述系统 - 支持public和hint"""
-    public: List[Dict[str, str]] = Field(default_factory=list, description="公开描述列表")
-    hint: str = Field(default="", description="仅AI知道的隐藏提示")
+    """二级描述系统 - 支持public、hint和add
+    
+    字段说明:
+    - public: 公开描述列表，只读，由系统维护
+    - hint: 仅AI知道的隐藏提示，只读
+    - add: 新增描述，StateEvolution只能向此字段添加内容
+    """
+    public: List[Dict[str, str]] = Field(default_factory=list, description="公开描述列表（只读）")
+    hint: str = Field(default="", description="仅AI知道的隐藏提示（只读）")
+    add: List[Dict[str, str]] = Field(default_factory=list, description="新增描述（StateEvolution可编辑）")
     model_config = ConfigDict(validate_assignment=True)
 
-    @field_validator("public", mode="before")
+    @field_validator("public", "add", mode="before")
     @classmethod
     def _normalize_public(cls, value: Any) -> List[Dict[str, str]]:
         """将历史脏数据统一收敛为列表结构。"""
@@ -44,9 +51,11 @@ class Description(BaseModel):
         return normalized
 
     def get_public_text(self) -> str:
-        """获取所有公开描述的拼接文本"""
+        """获取所有公开描述的拼接文本（包含add字段的内容）"""
         lines: List[str] = []
-        for entry in self.public:
+        # 包含public和add字段的所有描述
+        all_descriptions = self.public + self.add
+        for entry in all_descriptions:
             if isinstance(entry, dict):
                 lines.append(str(entry.get("description", "")))
             elif isinstance(entry, str):
@@ -56,10 +65,16 @@ class Description(BaseModel):
         return "\n".join(lines)
     
     def add_public_description(self, text: str) -> None:
-        """添加新的公开描述"""
+        """添加新的公开描述到add字段"""
         normalized = str(text).strip()
         if normalized:
-            self.public.append({"description": normalized})
+            self.add.append({"description": normalized})
+    
+    def commit_add_to_public(self) -> None:
+        """将add字段的内容合并到public字段，然后清空add"""
+        if self.add:
+            self.public.extend(self.add)
+            self.add = []
 
 
 class Memory(BaseModel):

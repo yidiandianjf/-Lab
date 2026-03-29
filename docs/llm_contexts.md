@@ -218,42 +218,23 @@ E1(世界事实) → E2(输入信号) → E3(意图解释) → E4(规则结算) 
     // 回合追踪
     "turn_trace_so_far": { ... },
     
-    // 回合意图 - DMAgent解析后的结构化意图
+    // 回合意图 - DMAgent解析后的结构化意图（已简化）
     "turn_intent": {
       "actor_id": "char-player-01",           // 行动者ID
       "raw_input_text": "我想撬开保险箱",     // 原始输入
       "intent_text": "使用撬锁工具打开保险箱", // 解析后的意图
-      "interaction_type": "action",            // 交互类型
-      
-      // 检定计划 #修改建议:删除,用不到
-      "check_plan": {
-        "check_needed": true,                  // 是否需要检定
-        "check_type": "非对抗鉴定",            // 检定类型
-        "attributes": ["dex"],                 // 相关属性（敏捷）
-        "target_id": "item-safe-01",          // 目标ID
-        "difficulty": "困难"                   // 难度
-      },
-      
-      // 激活提示 - 是否需要NPC响应 #修改建议:删除,用不到
-      "activation_hint": {
-        "response_needed_hint": true,          // 需要NPC响应
-        "preferred_actor_id": "char-guard-01", // 优先响应的NPC
-        "candidate_npc_ids_hint": []           // 候选NPC列表
-      }
+      "interaction_type": "action"             // 交互类型
+      // 注意：check_plan和activation_hint已移除，StateEvolution不需要这些信息
     },
     
-    // 检定结果 - CheckSystem的输出
+    // 检定结果 - CheckSystem的输出（已简化，只保留核心字段）
     "check_result": {
-      "result": "success",           // 结果：success/failure
-      "dice_roll": 45,               // 骰子点数
-      "target_value": 60,            // 目标值（属性值）
-      "actor_value": 60,             // 行动者属性值
-      "detail": "检定成功，骰子45 <= 目标60" // 详细说明 #修改建议:删除只保留result即可
+      "result": "success"           // 结果：success/failure（已移除dice_roll/target_value/actor_value/detail）
     },
     
     // 事实锚点 - 玩家阶段已确定的事实
     "truth_anchor": {
-      "action_succeeded": true       // 玩家行动是否成功 #修改建议:删除,用不到
+      "action_succeeded": true       // 玩家行动是否成功
     }
   },
   
@@ -275,20 +256,22 @@ E1(世界事实) → E2(输入信号) → E3(意图解释) → E4(规则结算) 
         "neighbors",           // 地图邻居连接
         "entities.items",      // 地图上的物品
         "entities.characters", // 地图上的角色
-        "description.public",  // 公开描述列表
-        "memory.log"           // 记忆日志
+        "description.add"      // 新增描述（只能通过add操作添加）
+        // 注意：description.public和memory.log已从白名单移除
       ],
       
       // 更新规则
       "update_rule": {
-        "must_use_existing_field": true,  // 必须更新已存在的字段
-        "forbid_schema_break": true       // 禁止破坏数据结构
+        "must_use_existing_field": true,   // 必须更新已存在的字段
+        "forbid_schema_break": true,       // 禁止破坏数据结构
+        "forbidden_fields": ["is_player", "is_portable", "id", "name", "basic_info", "description.public", "description.hint", "memory.log", "memory.current_event"]
       },
       
       // 添加规则
       "add_rule": {
-        "target_must_be_list": true,      // 只能向列表类型字段添加
-        "forbid_nested_list_add": true    // 禁止嵌套列表添加
+        "target_must_be_list": true,       // 只能向列表类型字段添加
+        "forbid_nested_list_add": true,    // 禁止嵌套列表添加
+        "allowed_fields": ["inventory", "neighbors", "entities.items", "entities.characters", "description.add"]
       },
       
       // 删除规则
@@ -304,14 +287,29 @@ E1(世界事实) → E2(输入信号) → E3(意图解释) → E4(规则结算) 
         "char_target_must_be_map": true,                // 角色目标必须是地图
         "item_target_must_be_char_or_map": true,        // 物品目标可以是角色或地图
         "from_must_match_current_location_if_provided": true  // from必须匹配当前位置
+      },
+      
+      // 全局禁止编辑的字段
+      "forbidden_fields": [
+        "is_player", "is_portable", "id",
+        "name", "basic_info",
+        "description.public", "description.hint",
+        "memory.log", "memory.current_event"
+      ],
+      
+      // description字段特殊规则
+      "description_rule": {
+        "can_only_add_to_add_field": true,  // 只能向description.add添加
+        "cannot_edit_public": true,         // 不能编辑description.public
+        "cannot_edit_hint": true            // 不能编辑description.hint
       }
     }
   },
   
   "memory_policy": {
-    "drift_anchor_required": true,           // 必须遵守事实锚点，防止幻觉 #修改建议:删除,用不到
+    // 注意：drift_anchor_required已移除，由代码层控制记忆策略
     "max_generated_narrative_chars": 800     // 生成叙事的最大字符数
-  },
+  }
   
   "extensions": {
     "end_condition": "玩家找到出口或死亡"     // 结局条件描述
@@ -344,28 +342,22 @@ E1(世界事实) → E2(输入信号) → E3(意图解释) → E4(规则结算) 
     "dialogue_memory": { ... },
     "narrative_memory": { ... },
     "turn_trace_so_far": { ... },
-    
-    // 玩家阶段结算结果 #修改建议:确认在turn_trace_so_far中有无存储,如果有就删除这个字段,如果没有就应该将此信息并入到turn_trace_so_far中
-    "player_turn_resolution": {
-      "actor_id": "char-player-01",
-      "phase": "player",
-      "state_changes": [...],                  // 玩家步骤产生的变更
-      "local_narrative": "玩家成功撬开了保险箱",
-      "outcome": {
-        "action_succeeded": true,
-        "outcome_type": "success",
-        "consequence_tags": ["noise", "alert"]
-      }
-    },
+    // 注意：player_turn_resolution已移除，相关信息应从turn_trace_so_far中获取
     
     "truth_anchor": { ... },
     "npc_intent": "警告玩家停止撬锁行为",       // NPC意图
-    "check_result": null                        // NPC检定结果（可选）
+    "check_result": null                        // NPC检定结果（可选，已简化）
   },
   "constraints": {
     "rules": {
       "must_not_override_player_truth": true,   // 不能覆盖玩家事实
-      "must_not_duplicate_applied_changes": true // 不能重复已应用的变更
+      "must_not_duplicate_applied_changes": true, // 不能重复已应用的变更
+      "forbidden_fields": ["is_player", "is_portable", "id", "name", "basic_info", "description.public", "description.hint", "memory.log", "memory.current_event"],
+      "description_rule": {
+        "can_only_add_to_add_field": true,
+        "cannot_edit_public": true,
+        "cannot_edit_hint": true
+      }
     }
   },
   "memory_policy": {
@@ -388,18 +380,13 @@ E1(世界事实) → E2(输入信号) → E3(意图解释) → E4(规则结算) 
     "narrative_memory": { ... },
     "turn_trace_so_far": { ... },
     
-    // 结局判定的特殊意图
+    // 结局判定的特殊意图（已简化）
     "turn_intent": {
       "actor_id": "char-player-01",
       "raw_input_text": "结局判定",
       "intent_text": "检查当前状态是否触发结局",
-      "interaction_type": "action",
-      "check_plan": {
-        "check_needed": false  // 结局判定不需要检定
-      },
-      "activation_hint": {
-        "response_needed_hint": false
-      }
+      "interaction_type": "action"
+      // 注意：check_plan和activation_hint已移除
     },
     "check_result": null,
     "truth_anchor": {}
@@ -407,7 +394,13 @@ E1(世界事实) → E2(输入信号) → E3(意图解释) → E4(规则结算) 
   "constraints": {
     "rules": {
       "must_only_decide_ending": true,           // 只能决定结局
-      "must_not_invent_new_state_change": true  // 不能发明新状态变更
+      "must_not_invent_new_state_change": true,  // 不能发明新状态变更
+      "forbidden_fields": ["is_player", "is_portable", "id", "name", "basic_info", "description.public", "description.hint", "memory.log", "memory.current_event"],
+      "description_rule": {
+        "can_only_add_to_add_field": true,
+        "cannot_edit_public": true,
+        "cannot_edit_hint": true
+      }
     }
   },
   "memory_policy": {
@@ -466,16 +459,15 @@ E1(世界事实) → E2(输入信号) → E3(意图解释) → E4(规则结算) 
       "nearby_non_activated_npcs": [],
       
       // 附近物品
-      "nearby_items": [],
-      
-      // 场景危险 #修改建议:删除,用不到
-      "hazards": []
+      "nearby_items": []
+      // 注意：hazards字段已移除，不在NPCDirector中使用
     },
     
     // 玩家行动摘要
     "player_action_summary": "玩家通过观察与交涉尝试获取钥匙",
     
     // 玩家阶段结算结果 - NPC必须遵守的事实锚点
+    // 注意：此字段将在后续版本中从payload移除，相关信息应从turn_trace_so_far获取
     "player_turn_resolution": {
       "actor_id": "char-player-01",
       "phase": "player",
@@ -752,15 +744,24 @@ E1(世界事实) → E2(输入信号) → E3(意图解释) → E4(规则结算) 
   "current_map": {
     "id": "地图ID",
     "name": "地图名称",
-    "description": "地图描述",
-    "hint": "内部提示"
+    "description": {              // 描述系统（新增add字段）
+      "public": [...],            // 公开描述列表（只读，由系统维护）
+      "hint": "内部提示",        // 内部提示（只读）
+      "add": []                   // 新增描述（StateEvolution可添加）
+    }
   },
-  "nearby_characters": [...],  // 附近角色
-  "nearby_items": [...],       // 附近物品
-  "player_state": {...},       // 玩家状态
-  "available_exits": [...]     // 可用出口
+  "nearby_characters": [...],   // 附近角色
+  "nearby_items": [...],        // 附近物品
+  "player_state": {...},        // 玩家状态
+  "available_exits": [...]      // 可用出口
 }
 ```
+
+**Description系统说明：**
+- `public`: 公开描述列表，只读，由系统维护
+- `hint`: 内部提示，只读，仅AI可见
+- `add`: 新增描述，StateEvolution只能通过ADD操作向此字段添加内容
+- 系统会在回合结束时自动将`add`的内容合并到`public`
 
 ### DialogueMemory（对话记忆）
 

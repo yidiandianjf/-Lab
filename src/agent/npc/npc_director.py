@@ -204,7 +204,7 @@ class NPCDirector:
                 ),
                 "nearby_non_activated_npcs": [],
                 "nearby_items": [],
-                "hazards": [],
+                # 注意：hazards字段已移除，不在NPCDirector中使用
             },
             "player_action_summary": player_intent.action_description if player_intent else "",
             "player_turn_resolution": None,

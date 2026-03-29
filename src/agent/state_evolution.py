@@ -41,13 +41,14 @@ from src.agent.llm_service import LLMService
 # 配置日志
 logger = logging.getLogger(__name__)
 
+# StateEvolution可编辑的白名单字段
+# 注意：description.public和description.hint已移除，只能通过description.add添加
 ALLOWED_DELETE_LIST_FIELDS = {
     "inventory",
     "neighbors",
     "entities.items",
     "entities.characters",
-    "description.public",
-    "memory.log",
+    "description.add",  # 只能通过add操作向description.add添加
 }
 
 ALLOWED_LIST_MUTATION_FIELDS = {
@@ -55,14 +56,20 @@ ALLOWED_LIST_MUTATION_FIELDS = {
     "neighbors",
     "entities.items",
     "entities.characters",
-    "description.public",
-    "memory.log",
+    "description.add",  # 只能通过add操作向description.add添加
 }
 
+# StateEvolution禁止编辑的字段
 FORBIDDEN_MUTATION_FIELDS = {
     "is_player",
     "is_portable",
     "id",
+    "name",                    # 禁止编辑名称
+    "basic_info",             # 禁止编辑基本信息
+    "description.public",     # 禁止直接编辑public，只能通过add字段添加
+    "description.hint",       # 禁止编辑hint
+    "memory.log",             # 禁止编辑记忆日志
+    "memory.current_event",   # 禁止编辑当前事件
 }
 
 # StateEvolution V2 response schema（用于LLM输出约束）
@@ -442,24 +449,20 @@ class StateEvolution:
         game_context: Dict[str, Any],
     ) -> LLMRequestEnvelopeV2:
         turn_id = int(getattr(game_state, "turn_count", 0) or 0)
+        # 简化的turn_intent，移除了check_plan和activation_hint
         turn_intent = game_context.get("turn_intent") or {
             "actor_id": game_state.player_id or "",
             "raw_input_text": action_description,
             "intent_text": action_description,
             "interaction_type": "action",
-            "check_plan": {
-                "check_needed": check_result is not None,
-                "check_type": "非对抗鉴定" if check_result is not None else None,
-                "attributes": [],
-                "target_id": None,
-                "difficulty": "常规" if check_result is not None else None,
-            },
-            "activation_hint": {
-                "response_needed_hint": bool(game_context.get("npc_response_expected", False)),
-                "preferred_actor_id": game_context.get("npc_response_actor_id"),
-                "candidate_npc_ids_hint": [],
-            },
+            # 注意：check_plan和activation_hint已移除，StateEvolution不需要这些信息
         }
+        # 简化的check_result，只保留核心字段
+        simplified_check_result = None
+        if check_result:
+            simplified_check_result = {
+                "result": check_result.result,  # 只保留结果：success/failure
+            }
         return LLMRequestEnvelopeV2(
             request_id=f"turn-{turn_id}-player-evolve",
             turn_id=turn_id,
@@ -470,15 +473,23 @@ class StateEvolution:
                 "narrative_memory": game_context.get("narrative_memory", {"summary_lines": [], "key_facts": [], "stable_facts": []}),
                 "turn_trace_so_far": game_context.get("turn_trace_so_far", {"turn_id": turn_id, "steps": []}),
                 "turn_intent": turn_intent,
-                "check_result": check_result.model_dump() if check_result else None,
+                "check_result": simplified_check_result,  # 使用简化的check_result
                 "truth_anchor": game_context.get("player_resolution_anchor", {}),
             },
             constraints={
                 "enums": {"allowed_change_operations": ["update", "add", "del", "move"]},
                 "rules": {
                     "delete_whitelist": sorted(ALLOWED_DELETE_LIST_FIELDS),
-                    "update_rule": {"must_use_existing_field": True, "forbid_schema_break": True},
-                    "add_rule": {"target_must_be_list": True, "forbid_nested_list_add": True},
+                    "update_rule": {
+                        "must_use_existing_field": True, 
+                        "forbid_schema_break": True,
+                        "forbidden_fields": sorted(FORBIDDEN_MUTATION_FIELDS),  # 禁止编辑的字段
+                    },
+                    "add_rule": {
+                        "target_must_be_list": True, 
+                        "forbid_nested_list_add": True,
+                        "allowed_fields": sorted(ALLOWED_LIST_MUTATION_FIELDS),  # 只允许添加到这些字段
+                    },
                     "delete_rule": {"forbid_scalar_delete": True, "coerce_scalar_delete_to_update": True},
                     "move_rule": {
                         "field_must_be": "location",
@@ -487,9 +498,15 @@ class StateEvolution:
                         "item_target_must_be_char_or_map": True,
                         "from_must_match_current_location_if_provided": True,
                     },
+                    "forbidden_fields": sorted(FORBIDDEN_MUTATION_FIELDS),  # 全局禁止编辑的字段
+                    "description_rule": {
+                        "can_only_add_to_add_field": True,  # 只能向description.add添加
+                        "cannot_edit_public": True,         # 不能编辑description.public
+                        "cannot_edit_hint": True,           # 不能编辑description.hint
+                    },
                 },
             },
-            memory_policy={"drift_anchor_required": True, "max_generated_narrative_chars": 800},
+            memory_policy={"max_generated_narrative_chars": 800},
             extensions={"end_condition": self.end_condition},
         )
 
@@ -502,6 +519,12 @@ class StateEvolution:
         game_context: Dict[str, Any],
     ) -> LLMRequestEnvelopeV2:
         turn_id = int(getattr(game_state, "turn_count", 0) or 0)
+        # 简化的check_result
+        simplified_check_result = None
+        if check_result:
+            simplified_check_result = {
+                "result": check_result.result,
+            }
         return LLMRequestEnvelopeV2(
             request_id=f"turn-{turn_id}-npc-evolve-{npc_id}",
             turn_id=turn_id,
@@ -513,19 +536,25 @@ class StateEvolution:
                 "dialogue_memory": game_context.get("dialogue_memory", {"recent_dialogues": []}),
                 "narrative_memory": game_context.get("narrative_memory", {"summary_lines": [], "key_facts": [], "stable_facts": []}),
                 "turn_trace_so_far": game_context.get("turn_trace_so_far", {"turn_id": turn_id, "steps": []}),
-                "player_turn_resolution": game_context.get("player_turn_resolution"),
+                # 注意：player_turn_resolution已移除，相关信息应从turn_trace_so_far中获取
                 "truth_anchor": game_context.get("player_resolution_anchor", {}),
                 "npc_intent": npc_intent or "",
-                "check_result": check_result.model_dump() if check_result else None,
+                "check_result": simplified_check_result,
             },
             constraints={
                 "enums": {"allowed_change_operations": ["update", "add", "del", "move"]},
                 "rules": {
                     "must_not_override_player_truth": True,
                     "must_not_duplicate_applied_changes": True,
+                    "forbidden_fields": sorted(FORBIDDEN_MUTATION_FIELDS),
+                    "description_rule": {
+                        "can_only_add_to_add_field": True,
+                        "cannot_edit_public": True,
+                        "cannot_edit_hint": True,
+                    },
                 },
             },
-            memory_policy={"max_generated_narrative_chars": 600, "drift_anchor_required": True},
+            memory_policy={"max_generated_narrative_chars": 600},
             extensions={"end_condition": self.end_condition},
         )
 
@@ -549,18 +578,7 @@ class StateEvolution:
                     "raw_input_text": "结局判定",
                     "intent_text": "检查当前状态是否触发结局",
                     "interaction_type": "action",
-                    "check_plan": {
-                        "check_needed": False,
-                        "check_type": None,
-                        "attributes": [],
-                        "target_id": None,
-                        "difficulty": None,
-                    },
-                    "activation_hint": {
-                        "response_needed_hint": False,
-                        "preferred_actor_id": None,
-                        "candidate_npc_ids_hint": [],
-                    },
+                    # 注意：check_plan和activation_hint已移除
                 },
                 "check_result": None,
                 "truth_anchor": {},
@@ -570,9 +588,15 @@ class StateEvolution:
                 "rules": {
                     "must_only_decide_ending": True,
                     "must_not_invent_new_state_change": True,
+                    "forbidden_fields": sorted(FORBIDDEN_MUTATION_FIELDS),
+                    "description_rule": {
+                        "can_only_add_to_add_field": True,
+                        "cannot_edit_public": True,
+                        "cannot_edit_hint": True,
+                    },
                 },
             },
-            memory_policy={"drift_anchor_required": True, "max_generated_narrative_chars": 400},
+            memory_policy={"max_generated_narrative_chars": 400},
             extensions={"end_condition": self.end_condition, "end_check_only": True},
         )
 
