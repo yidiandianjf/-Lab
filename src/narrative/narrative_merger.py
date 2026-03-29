@@ -56,6 +56,8 @@ class NarrativeMerger:
         llm_service: Optional[LLMService] = None,
         system_prompt: Optional[str] = None,
         use_llm: bool = True,
+        debug_logger: Optional[Any] = None,
+        debug_agent_name: str = "narrative_merger",
     ):
         self.use_llm = bool(use_llm)
         self.llm_service = llm_service
@@ -68,6 +70,8 @@ class NarrativeMerger:
             self.llm_service = None
 
         self.system_prompt = system_prompt or self._load_default_prompt()
+        self.debug_logger = debug_logger
+        self.debug_agent_name = debug_agent_name
 
     def merge(
         self,
@@ -127,13 +131,34 @@ class NarrativeMerger:
         )
 
         if hasattr(self.llm_service, "call_llm_json"):
-            response = self.llm_service.call_llm_json(prompt=prompt, schema=self.OUTPUT_SCHEMA)
+            response = self._call_llm_json_compatible(
+                prompt=prompt,
+                schema=self.OUTPUT_SCHEMA,
+                debug_logger=self.debug_logger,
+                debug_agent=self.debug_agent_name,
+                debug_context={
+                    "request_id": request.request_id,
+                    "phase": "narrative_merge_legacy",
+                    "fragment_count": len(fragments),
+                },
+                debug_call_id=f"{request.request_id}-merge-legacy",
+            )
             if response.get("success"):
                 data = response.get("data") or {}
                 result = data.get("result") or {}
                 return str(result.get("merged_narrative", "")).strip()
 
-        response = self.llm_service.call_llm(prompt)
+        response = self._call_llm_compatible(
+            prompt,
+            debug_logger=self.debug_logger,
+            debug_agent=self.debug_agent_name,
+            debug_context={
+                "request_id": request.request_id,
+                "phase": "narrative_merge_legacy_plain",
+                "fragment_count": len(fragments),
+            },
+            debug_call_id=f"{request.request_id}-merge-legacy-plain",
+        )
         if not response.get("success"):
             return ""
         return str(response.get("content", "")).strip()
@@ -192,7 +217,19 @@ class NarrativeMerger:
                 "## 请求 JSON\n"
                 f"{json.dumps(request.model_dump(mode='json'), ensure_ascii=False, indent=2)}"
             )
-            response = self.llm_service.call_llm_json(prompt=prompt, schema=self.OUTPUT_SCHEMA)
+            response = self._call_llm_json_compatible(
+                prompt=prompt,
+                schema=self.OUTPUT_SCHEMA,
+                debug_logger=self.debug_logger,
+                debug_agent=self.debug_agent_name,
+                debug_context={
+                    "request_id": request.request_id,
+                    "phase": "narrative_merge_v2",
+                    "fragment_count": len(fragments),
+                    "turn_id": request.turn_id,
+                },
+                debug_call_id=f"{request.request_id}-merge",
+            )
             if response.get("success"):
                 data = response.get("data") or {}
                 result = data.get("result") or {}
@@ -227,3 +264,22 @@ class NarrativeMerger:
         prompt_path = Path(__file__).parent / "prompt" / "narrative_merger_prompt.md"
         with open(prompt_path, "r", encoding="utf-8") as f:
             return f.read()
+
+    def _call_llm_json_compatible(self, **kwargs) -> Dict[str, Any]:
+        try:
+            return self.llm_service.call_llm_json(**kwargs)
+        except TypeError as e:
+            if "unexpected keyword argument" not in str(e):
+                raise
+            return self.llm_service.call_llm_json(
+                prompt=kwargs.get("prompt", ""),
+                schema=kwargs.get("schema", {}),
+            )
+
+    def _call_llm_compatible(self, prompt: str, **kwargs) -> Dict[str, Any]:
+        try:
+            return self.llm_service.call_llm(prompt, **kwargs)
+        except TypeError as e:
+            if "unexpected keyword argument" not in str(e):
+                raise
+            return self.llm_service.call_llm(prompt)

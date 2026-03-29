@@ -255,6 +255,17 @@ class LLMService:
         
         self.client = OpenAI(**client_kwargs)
         logger.info(f"LLM服务初始化完成，模型: {self.config.model}")
+
+    @staticmethod
+    def _pop_debug_options(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        options = {
+            "logger": kwargs.pop("debug_logger", None),
+            "agent": str(kwargs.pop("debug_agent", "llm")).strip() or "llm",
+            "context": kwargs.pop("debug_context", None) or {},
+            "call_id": kwargs.pop("debug_call_id", None),
+            "attempt": kwargs.pop("debug_attempt", None),
+        }
+        return options
     
     @retry_with_backoff(max_retries=3)
     def call_llm(
@@ -283,6 +294,17 @@ class LLMService:
                 "error": Optional[str]
             }
         """
+        debug_options = self._pop_debug_options(kwargs)
+        debug_logger = debug_options.get("logger")
+        debug_agent = debug_options.get("agent")
+        debug_context = dict(debug_options.get("context") or {})
+        debug_call_id = debug_options.get("call_id")
+        debug_attempt = debug_options.get("attempt")
+        if debug_attempt is not None:
+            debug_context["attempt"] = debug_attempt
+
+        started_at = time.time()
+        prompt_logged = False
         try:
             messages = [{"role": "user", "content": prompt}]
             
@@ -310,26 +332,97 @@ class LLMService:
                 api_params["extra_body"]["enable_thinking"] = enable_thinking
             
             # 调用API
+            if debug_logger and hasattr(debug_logger, "log_llm_request"):
+                model_name = kwargs.get("model", self.config.model)
+                try:
+                    debug_logger.log_llm_request(
+                        agent=debug_agent,
+                        prompt=prompt,
+                        model=model_name,
+                        tokens=0,
+                        call_id=debug_call_id,
+                        context=debug_context,
+                    )
+                    prompt_logged = True
+                except Exception:
+                    pass
+
             response = self.client.chat.completions.create(**api_params)
             
             # 提取响应内容
             content = response.choices[0].message.content
             usage = response.usage.model_dump() if response.usage else None
             
-            return {
+            result = {
                 "success": True,
                 "content": content,
                 "model": response.model,
                 "usage": usage,
                 "error": None,
             }
+            if debug_logger and hasattr(debug_logger, "log_llm_response"):
+                duration_ms = (time.time() - started_at) * 1000
+                response_context = {
+                    "success": True,
+                    "usage": usage or {},
+                }
+                try:
+                    debug_logger.log_llm_response(
+                        agent=debug_agent,
+                        response=json.dumps(result, ensure_ascii=False, indent=2),
+                        duration_ms=duration_ms,
+                        tokens=0,
+                        call_id=debug_call_id,
+                        context=response_context,
+                    )
+                except Exception:
+                    pass
+            return result
             
         except APIError as e:
             logger.error(f"API调用失败: {e}")
-            return self._fallback_response(f"API错误: {str(e)}")
+            fallback = self._fallback_response(f"API错误: {str(e)}")
+            if debug_logger and hasattr(debug_logger, "log_llm_error"):
+                try:
+                    if not prompt_logged and hasattr(debug_logger, "log_llm_request"):
+                        debug_logger.log_llm_request(
+                            agent=debug_agent,
+                            prompt=prompt,
+                            model=kwargs.get("model", self.config.model),
+                            tokens=0,
+                            call_id=debug_call_id,
+                            context=debug_context,
+                        )
+                    debug_logger.log_llm_error(
+                        agent=debug_agent,
+                        error=fallback["error"],
+                        context={"call_id": debug_call_id, "attempt": debug_attempt},
+                    )
+                except Exception:
+                    pass
+            return fallback
         except Exception as e:
             logger.error(f"调用异常: {e}")
-            return self._fallback_response(f"调用异常: {str(e)}")
+            fallback = self._fallback_response(f"调用异常: {str(e)}")
+            if debug_logger and hasattr(debug_logger, "log_llm_error"):
+                try:
+                    if not prompt_logged and hasattr(debug_logger, "log_llm_request"):
+                        debug_logger.log_llm_request(
+                            agent=debug_agent,
+                            prompt=prompt,
+                            model=kwargs.get("model", self.config.model),
+                            tokens=0,
+                            call_id=debug_call_id,
+                            context=debug_context,
+                        )
+                    debug_logger.log_llm_error(
+                        agent=debug_agent,
+                        error=fallback["error"],
+                        context={"call_id": debug_call_id, "attempt": debug_attempt},
+                    )
+                except Exception:
+                    pass
+            return fallback
     
     def call_llm_json(
         self,
@@ -363,6 +456,12 @@ class LLMService:
         """
         attempts = max(1, max_retries)
         previous_error = ""
+        local_kwargs = dict(kwargs)
+        debug_logger = local_kwargs.pop("debug_logger", None)
+        debug_agent = str(local_kwargs.pop("debug_agent", "llm_json") or "llm_json")
+        debug_base_context = dict(local_kwargs.pop("debug_context", None) or {})
+        debug_base_call_id = local_kwargs.pop("debug_call_id", None)
+        local_kwargs.pop("debug_attempt", None)
         last_result: Dict[str, Any] = {
             "success": False,
             "data": None,
@@ -410,13 +509,31 @@ class LLMService:
                     json_instruction,
                     response_format=response_format,
                     max_retries=max_retries,
-                    **kwargs
+                    debug_logger=debug_logger,
+                    debug_agent=debug_agent,
+                    debug_context={
+                        **debug_base_context,
+                        "schema": schema,
+                        "json_mode": "json_schema" if structured_output else "json_object",
+                    },
+                    debug_call_id=f"{debug_base_call_id or 'json'}-try-{attempt:02d}",
+                    debug_attempt=attempt,
+                    **local_kwargs
                 )
             except Exception:
                 result = self.call_llm(
                     json_instruction,
                     max_retries=max_retries,
-                    **kwargs
+                    debug_logger=debug_logger,
+                    debug_agent=debug_agent,
+                    debug_context={
+                        **debug_base_context,
+                        "schema": schema,
+                        "json_mode": "plain",
+                    },
+                    debug_call_id=f"{debug_base_call_id or 'json'}-try-{attempt:02d}",
+                    debug_attempt=attempt,
+                    **local_kwargs
                 )
 
             if not result.get("success"):
@@ -429,6 +546,11 @@ class LLMService:
                     "error": previous_error,
                 }
                 logger.warning(f"JSON调用失败，第{attempt}/{attempts}次: {previous_error}")
+                if debug_logger and hasattr(debug_logger, "log_llm_retry"):
+                    try:
+                        debug_logger.log_llm_retry(debug_agent, attempt, previous_error)
+                    except Exception:
+                        pass
                 continue
 
             content = self._clean_json_content(result.get("content", ""))
@@ -445,6 +567,11 @@ class LLMService:
             except json.JSONDecodeError as e:
                 previous_error = f"JSON解析失败: {str(e)}"
                 logger.warning(f"{previous_error}，第{attempt}/{attempts}次，原始内容: {result.get('content', '')}")
+                if debug_logger and hasattr(debug_logger, "log_llm_retry"):
+                    try:
+                        debug_logger.log_llm_retry(debug_agent, attempt, previous_error)
+                    except Exception:
+                        pass
                 last_result = {
                     "success": False,
                     "data": None,
@@ -453,6 +580,15 @@ class LLMService:
                     "error": previous_error,
                 }
 
+        if debug_logger and hasattr(debug_logger, "log_llm_error"):
+            try:
+                debug_logger.log_llm_error(
+                    agent=debug_agent,
+                    error=last_result.get("error", "未知错误"),
+                    context={"request_context": debug_base_context, "attempts": attempts},
+                )
+            except Exception:
+                pass
         return last_result
     
     @retry_with_backoff(max_retries=3)

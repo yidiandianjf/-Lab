@@ -93,6 +93,8 @@ class DebugLogger:
         self._turn_records: List[TurnRecord] = []
         self._current_turn_record: Optional[TurnRecord] = None
         self._current_phase_record: Optional[PhaseRecord] = None
+        self._llm_call_index: int = 0
+        self._latest_llm_call_id_by_agent: Dict[str, str] = {}
         
         # 一致性检查器（可选）
         self._consistency_checker: Optional[Any] = None
@@ -284,6 +286,8 @@ World: {self.world_name or 'N/A'} | Player: {self.player_id or 'N/A'}
             turn_number=self._current_turn,
             player_input=player_input
         )
+        self._llm_call_index = 0
+        self._latest_llm_call_id_by_agent = {}
         
         # 创建 turn 目录
         self._current_turn_dir = self.turns_dir / f"turn_{self._current_turn:03d}"
@@ -404,7 +408,9 @@ World: {self.world_name or 'N/A'} | Player: {self.player_id or 'N/A'}
         agent: str,
         prompt: str,
         model: str,
-        tokens: int = 0
+        tokens: int = 0,
+        call_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> Path:
         """记录 LLM 请求
         
@@ -417,9 +423,26 @@ World: {self.world_name or 'N/A'} | Player: {self.player_id or 'N/A'}
         Returns:
             prompt 保存的文件路径
         """
-        # 保存完整 prompt 到文件
+        if not self._current_turn_dir:
+            return Path("")
+
+        call_id = call_id or self._next_llm_call_id()
+        self._latest_llm_call_id_by_agent[agent] = call_id
+
         prompt_file = self._current_turn_dir / f"llm_{agent}_request.txt"
         prompt_file.write_text(prompt, encoding="utf-8")
+
+        llm_calls_dir = self._current_turn_dir / "llm_calls"
+        llm_calls_dir.mkdir(exist_ok=True)
+        prompt_detailed_file = llm_calls_dir / f"{call_id}_{agent}_request.txt"
+        prompt_detailed_file.write_text(prompt, encoding="utf-8")
+
+        if context is not None:
+            meta_file = llm_calls_dir / f"{call_id}_{agent}_request_meta.json"
+            meta_file.write_text(
+                json.dumps(context, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
         
         # 记录事件
         self._log_event(
@@ -428,7 +451,10 @@ World: {self.world_name or 'N/A'} | Player: {self.player_id or 'N/A'}
                 "agent": agent,
                 "model": model,
                 "tokens": tokens,
-                "prompt_file": str(prompt_file)
+                "prompt_file": str(prompt_file),
+                "prompt_file_detailed": str(prompt_detailed_file),
+                "call_id": call_id,
+                "context": context or {},
             }
         )
         
@@ -441,14 +467,16 @@ World: {self.world_name or 'N/A'} | Player: {self.player_id or 'N/A'}
         # 更新统计
         self._session_summary.total_llm_calls += 1
         
-        return prompt_file
+        return prompt_detailed_file
     
     def log_llm_response(
         self,
         agent: str,
         response: str,
         duration_ms: float,
-        tokens: int = 0
+        tokens: int = 0,
+        call_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> Path:
         """记录 LLM 响应
         
@@ -461,9 +489,26 @@ World: {self.world_name or 'N/A'} | Player: {self.player_id or 'N/A'}
         Returns:
             response 保存的文件路径
         """
-        # 保存完整 response 到文件
+        if not self._current_turn_dir:
+            return Path("")
+
+        call_id = call_id or self._latest_llm_call_id_by_agent.get(agent) or self._next_llm_call_id()
+        self._latest_llm_call_id_by_agent[agent] = call_id
+
         response_file = self._current_turn_dir / f"llm_{agent}_response.txt"
         response_file.write_text(response, encoding="utf-8")
+
+        llm_calls_dir = self._current_turn_dir / "llm_calls"
+        llm_calls_dir.mkdir(exist_ok=True)
+        response_detailed_file = llm_calls_dir / f"{call_id}_{agent}_response.txt"
+        response_detailed_file.write_text(response, encoding="utf-8")
+
+        if context is not None:
+            meta_file = llm_calls_dir / f"{call_id}_{agent}_response_meta.json"
+            meta_file.write_text(
+                json.dumps(context, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
         
         # 记录事件
         self._log_event(
@@ -472,7 +517,10 @@ World: {self.world_name or 'N/A'} | Player: {self.player_id or 'N/A'}
                 "agent": agent,
                 "duration_ms": duration_ms,
                 "tokens": tokens,
-                "response_file": str(response_file)
+                "response_file": str(response_file),
+                "response_file_detailed": str(response_detailed_file),
+                "call_id": call_id,
+                "context": context or {},
             }
         )
         
@@ -490,7 +538,11 @@ World: {self.world_name or 'N/A'} | Player: {self.player_id or 'N/A'}
                 "tokens": tokens
             })
         
-        return response_file
+        return response_detailed_file
+
+    def _next_llm_call_id(self) -> str:
+        self._llm_call_index += 1
+        return f"{self._llm_call_index:03d}"
     
     def log_llm_retry(
         self,

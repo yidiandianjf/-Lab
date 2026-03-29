@@ -78,6 +78,8 @@ class NPCDirector:
         llm_service: Optional[LLMService] = None,
         system_prompt: Optional[str] = None,
         use_llm: bool = True,
+        debug_logger: Optional[Any] = None,
+        debug_agent_name: str = "npc_director",
     ):
         self.use_llm = bool(use_llm)
         self.llm_service = llm_service
@@ -91,6 +93,8 @@ class NPCDirector:
             self.llm_service = None
 
         self.system_prompt = system_prompt or load_npc_director_prompt()
+        self.debug_logger = debug_logger
+        self.debug_agent_name = debug_agent_name
 
     def decide_actions(
         self,
@@ -137,15 +141,44 @@ class NPCDirector:
         request = self._build_request(npc_ids, game_state, player_intent, trigger_source, recent_events, narrative_context)
         prompt = self._build_prompt(request)
         try:
-            response = self.llm_service.call_llm_json(prompt=prompt, schema=NPC_DIRECTOR_OUTPUT_SCHEMA)
+            response = self._call_llm_json_compatible(
+                prompt=prompt,
+                schema=NPC_DIRECTOR_OUTPUT_SCHEMA,
+                debug_logger=self.debug_logger,
+                debug_agent=self.debug_agent_name,
+                debug_context={
+                    "request_id": request.request_id,
+                    "phase": "npc_planning",
+                    "trigger_source": trigger_source,
+                    "npc_count": len(npc_ids),
+                },
+                debug_call_id=f"{request.request_id}-npc-plan",
+            )
             if not response.get("success"):
                 logger.warning("NPCDirector LLM调用失败: %s", response.get("error"))
+                if self.debug_logger and hasattr(self.debug_logger, "log_llm_retry"):
+                    self.debug_logger.log_llm_retry(
+                        self.debug_agent_name,
+                        1,
+                        str(response.get("error", "unknown error")),
+                    )
                 return None
             data = response.get("data") or {}
             return self._parse_decision(data, npc_ids, request.request_id)
         except Exception as e:
             logger.warning("NPCDirector LLM解析失败，回退规则兜底: %s", e)
             return None
+
+    def _call_llm_json_compatible(self, **kwargs) -> Dict[str, Any]:
+        try:
+            return self.llm_service.call_llm_json(**kwargs)
+        except TypeError as e:
+            if "unexpected keyword argument" not in str(e):
+                raise
+            return self.llm_service.call_llm_json(
+                prompt=kwargs.get("prompt", ""),
+                schema=kwargs.get("schema", {}),
+            )
 
     def _build_request(
         self,

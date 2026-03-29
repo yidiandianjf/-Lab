@@ -148,7 +148,9 @@ class StateEvolution:
         self,
         llm_service: Optional[LLMService] = None,
         system_prompt: Optional[str] = None,
-        end_condition: str = ""
+        end_condition: str = "",
+        debug_logger: Optional[Any] = None,
+        debug_agent_name: str = "state_evolution",
     ):
         """
         初始化状态推演系统
@@ -169,6 +171,8 @@ class StateEvolution:
         
         # 结局条件
         self.end_condition = end_condition
+        self.debug_logger = debug_logger
+        self.debug_agent_name = debug_agent_name
         
         logger.info("状态推演系统初始化完成")
     
@@ -599,14 +603,25 @@ class StateEvolution:
         try:
             for attempt in range(1, 3):
                 prompt_with_feedback = self._append_error_feedback(prompt, error_feedback)
-                response = self.llm_service.call_llm_json(
+                response = self._call_llm_json_compatible(
                     prompt=prompt_with_feedback,
                     schema=STATE_EVOLUTION_OUTPUT_SCHEMA,
+                    debug_logger=self.debug_logger,
+                    debug_agent=self.debug_agent_name,
+                    debug_context={
+                        "request_id": request_id,
+                        "phase": "state_evolution",
+                        "has_error_feedback": bool(error_feedback),
+                    },
+                    debug_call_id=f"{request_id or 'state-evolution'}-state",
+                    debug_attempt=attempt,
                 )
 
                 if not response.get("success"):
                     error_msg = response.get("error", "未知错误")
                     logger.error(f"LLM调用失败: {error_msg}")
+                    if self.debug_logger and hasattr(self.debug_logger, "log_llm_retry"):
+                        self.debug_logger.log_llm_retry(self.debug_agent_name, attempt, error_msg)
                     return self._create_fallback_output(f"推演失败: {error_msg}")
 
                 data = response.get("data", {})
@@ -624,6 +639,8 @@ class StateEvolution:
                             lines.append(f"LLM erro字段: {llm_erro}")
                         error_feedback = "；".join(lines)
                         logger.warning(f"状态推演输出解析失败(第{attempt}次): {error_feedback}")
+                        if self.debug_logger and hasattr(self.debug_logger, "log_llm_retry"):
+                            self.debug_logger.log_llm_retry(self.debug_agent_name, attempt, error_feedback)
                         continue
                     return output
 
@@ -638,12 +655,25 @@ class StateEvolution:
                     lines.append(f"LLM erro字段: {llm_erro}")
                 error_feedback = "；".join(lines)
                 logger.warning(f"状态推演输出校验失败(第{attempt}次): {error_feedback}")
+                if self.debug_logger and hasattr(self.debug_logger, "log_llm_retry"):
+                    self.debug_logger.log_llm_retry(self.debug_agent_name, attempt, error_feedback)
 
             return self._create_fallback_output(f"状态推演输出校验失败: {error_feedback}")
 
         except Exception as e:
             logger.error(f"状态推演时发生异常: {e}")
             return self._create_fallback_output(f"异常: {str(e)}")
+
+    def _call_llm_json_compatible(self, **kwargs) -> Dict[str, Any]:
+        try:
+            return self.llm_service.call_llm_json(**kwargs)
+        except TypeError as e:
+            if "unexpected keyword argument" not in str(e):
+                raise
+            return self.llm_service.call_llm_json(
+                prompt=kwargs.get("prompt", ""),
+                schema=kwargs.get("schema", {}),
+            )
 
     def _append_error_feedback(self, prompt: str, error_feedback: str) -> str:
         """将系统错误反馈追加到Prompt，用于引导LLM纠正输出。"""

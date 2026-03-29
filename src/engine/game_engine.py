@@ -123,6 +123,8 @@ class GameEngine:
         except Exception as e:
             logger.warning(f"DebugLogger初始化失败: {e}")
             self.debug_logger = None
+
+        self._bind_debug_logger_to_agents()
         
         # 游戏状态
         self.game_state = GameState()
@@ -1895,7 +1897,10 @@ class GameEngine:
         if NPCDirector is None:
             return None
         try:
-            return NPCDirector(use_llm=self._npc_director_use_llm)
+            return NPCDirector(
+                use_llm=self._npc_director_use_llm,
+                debug_logger=self.debug_logger,
+            )
         except Exception as e:
             logger.warning(f"初始化NPCDirector失败，将回退旧逻辑: {e}")
             return None
@@ -1905,10 +1910,21 @@ class GameEngine:
         if NarrativeMerger is None:
             return None
         try:
-            return NarrativeMerger(use_llm=self._narrative_merge_use_llm)
+            return NarrativeMerger(
+                use_llm=self._narrative_merge_use_llm,
+                debug_logger=self.debug_logger,
+            )
         except Exception as e:
             logger.warning(f"初始化NarrativeMerger失败，将使用拼接回退: {e}")
             return None
+
+    def _bind_debug_logger_to_agents(self):
+        if not self.debug_logger:
+            return
+        self.dm_agent.debug_logger = self.debug_logger
+        self.state_agent.debug_logger = self.debug_logger
+        self.dm_agent.debug_agent_name = "dm_agent"
+        self.state_agent.debug_agent_name = "state_evolution"
     
     # ============================================================
     # 辅助方法

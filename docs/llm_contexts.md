@@ -164,14 +164,14 @@ E1(世界事实) → E2(输入信号) → E3(意图解释) → E4(规则结算) 
     }
   },
   
-  // 记忆策略 - 控制记忆的使用方式
+  // 记忆策略 - 控制记忆的使用方式  #有无代码显式控制,不应该是让llm决定保留哪几条对话啊,如果有就删除这个字段,如果没有就增加一个配置项到config.json中,并让代码控制记忆策略的使用
   "memory_policy": {
     "max_recent_dialogues": 20,      // 最多保留20条近期对话
     "max_summary_lines": 20,         // 最多保留20条摘要
     "drift_anchor_required": true    // 必须遵守事实锚点，防止幻觉
   },
   
-  // 扩展信息 - 额外的配置参数
+  // 扩展信息 - 额外的配置参数  
   "extensions": {
     "npc_response_policy": "",       // NPC响应策略
     "npc_prelude": ""                // NPC前置剧情
@@ -225,7 +225,7 @@ E1(世界事实) → E2(输入信号) → E3(意图解释) → E4(规则结算) 
       "intent_text": "使用撬锁工具打开保险箱", // 解析后的意图
       "interaction_type": "action",            // 交互类型
       
-      // 检定计划
+      // 检定计划 #修改建议:删除,用不到
       "check_plan": {
         "check_needed": true,                  // 是否需要检定
         "check_type": "非对抗鉴定",            // 检定类型
@@ -234,7 +234,7 @@ E1(世界事实) → E2(输入信号) → E3(意图解释) → E4(规则结算) 
         "difficulty": "困难"                   // 难度
       },
       
-      // 激活提示 - 是否需要NPC响应
+      // 激活提示 - 是否需要NPC响应 #修改建议:删除,用不到
       "activation_hint": {
         "response_needed_hint": true,          // 需要NPC响应
         "preferred_actor_id": "char-guard-01", // 优先响应的NPC
@@ -248,12 +248,12 @@ E1(世界事实) → E2(输入信号) → E3(意图解释) → E4(规则结算) 
       "dice_roll": 45,               // 骰子点数
       "target_value": 60,            // 目标值（属性值）
       "actor_value": 60,             // 行动者属性值
-      "detail": "检定成功，骰子45 <= 目标60" // 详细说明
+      "detail": "检定成功，骰子45 <= 目标60" // 详细说明 #修改建议:删除只保留result即可
     },
     
     // 事实锚点 - 玩家阶段已确定的事实
     "truth_anchor": {
-      "action_succeeded": true       // 玩家行动是否成功
+      "action_succeeded": true       // 玩家行动是否成功 #修改建议:删除,用不到
     }
   },
   
@@ -309,7 +309,7 @@ E1(世界事实) → E2(输入信号) → E3(意图解释) → E4(规则结算) 
   },
   
   "memory_policy": {
-    "drift_anchor_required": true,           // 必须遵守事实锚点
+    "drift_anchor_required": true,           // 必须遵守事实锚点，防止幻觉 #修改建议:删除,用不到
     "max_generated_narrative_chars": 800     // 生成叙事的最大字符数
   },
   
@@ -342,3 +342,547 @@ E1(世界事实) → E2(输入信号) → E3(意图解释) → E4(规则结算) 
     
     "world_state_view": { ... },
     "dialogue_memory": { ... },
+    "narrative_memory": { ... },
+    "turn_trace_so_far": { ... },
+    
+    // 玩家阶段结算结果 #修改建议:确认在turn_trace_so_far中有无存储,如果有就删除这个字段,如果没有就应该将此信息并入到turn_trace_so_far中
+    "player_turn_resolution": {
+      "actor_id": "char-player-01",
+      "phase": "player",
+      "state_changes": [...],                  // 玩家步骤产生的变更
+      "local_narrative": "玩家成功撬开了保险箱",
+      "outcome": {
+        "action_succeeded": true,
+        "outcome_type": "success",
+        "consequence_tags": ["noise", "alert"]
+      }
+    },
+    
+    "truth_anchor": { ... },
+    "npc_intent": "警告玩家停止撬锁行为",       // NPC意图
+    "check_result": null                        // NPC检定结果（可选）
+  },
+  "constraints": {
+    "rules": {
+      "must_not_override_player_truth": true,   // 不能覆盖玩家事实
+      "must_not_duplicate_applied_changes": true // 不能重复已应用的变更
+    }
+  },
+  "memory_policy": {
+    "max_generated_narrative_chars": 600        // NPC叙事更短
+  },
+  "extensions": { "end_condition": "" }
+}
+```
+
+### 2.4 结局判定上下文
+
+```json
+{
+  "request_id": "turn-{turn_id}-end-check",
+  "turn_id": 12,
+  "phase": "end_check",                        // 结局检查阶段
+  "payload": {
+    "world_state_view": { ... },
+    "dialogue_memory": { ... },
+    "narrative_memory": { ... },
+    "turn_trace_so_far": { ... },
+    
+    // 结局判定的特殊意图
+    "turn_intent": {
+      "actor_id": "char-player-01",
+      "raw_input_text": "结局判定",
+      "intent_text": "检查当前状态是否触发结局",
+      "interaction_type": "action",
+      "check_plan": {
+        "check_needed": false  // 结局判定不需要检定
+      },
+      "activation_hint": {
+        "response_needed_hint": false
+      }
+    },
+    "check_result": null,
+    "truth_anchor": {}
+  },
+  "constraints": {
+    "rules": {
+      "must_only_decide_ending": true,           // 只能决定结局
+      "must_not_invent_new_state_change": true  // 不能发明新状态变更
+    }
+  },
+  "memory_policy": {
+    "max_generated_narrative_chars": 400        // 结局叙事更短
+  },
+  "extensions": {
+    "end_condition": "结局条件",
+    "end_check_only": true
+  }
+}
+```
+
+### 2.5 StateEvolution输出字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `narrative` | string | 生成的叙事描述 |
+| `changes` | StateChange[] | 状态变更列表 |
+| `resolved` | boolean | 是否已解决 |
+| `is_end` | boolean | 是否触发结局 |
+| `end_narrative` | string | 结局叙事 |
+
+---
+
+## 3. NPCDirector（NPC导演）
+
+### 3.1 职责说明
+在同一回合为已激活的NPC生成结构化行动计划，协调多NPC之间的行动，避免叙事冲突。
+
+### 3.2 接收的完整上下文
+
+```json
+{
+  "request_id": "turn-{turn_id}-npc-plan",
+  "turn_id": 12,
+  "phase": "npc_planning",
+  "payload": {
+    // 触发来源
+    "trigger_source": "unified",  // unified: 统一响应模式
+    
+    // 激活的NPC列表 - 本轮需要规划的NPC
+    "activated_npc_ids": [
+      "char-guard-01",      // 守卫
+      "char-archivist-01"   // 馆藏管理员
+    ],
+    
+    // 场景上下文
+    "surrounding_context": {
+      "current_map": {
+        "id": "map-corridor-01",
+        "name": "走廊",
+        "description": "一条昏暗的走廊，尽头有一扇门"
+      },
+      
+      // 附近未激活的NPC（用于了解完整场景）
+      "nearby_non_activated_npcs": [],
+      
+      // 附近物品
+      "nearby_items": [],
+      
+      // 场景危险 #修改建议:删除,用不到
+      "hazards": []
+    },
+    
+    // 玩家行动摘要
+    "player_action_summary": "玩家通过观察与交涉尝试获取钥匙",
+    
+    // 玩家阶段结算结果 - NPC必须遵守的事实锚点
+    "player_turn_resolution": {
+      "actor_id": "char-player-01",
+      "phase": "player",
+      "state_changes": [
+        {
+          "id": "char-player-01",
+          "field": "inventory",
+          "operation": "add",
+          "value": "item-key-01"
+        }
+      ],
+      "local_narrative": "玩家成功说服守卫借出钥匙",
+      "outcome": {
+        "action_succeeded": true,        // 重要：NPC不能逆转这个结果
+        "outcome_type": "success",
+        "consequence_tags": ["persuasion", "trust"]
+      }
+    },
+    
+    // 回合追踪
+    "turn_trace_so_far": {
+      "turn_id": 12,
+      "steps": [
+        {
+          "step_id": "step-1",
+          "actor_id": "char-player-01",
+          "phase": "player",
+          "resolution": { ... }
+        }
+      ]
+    },
+    
+    // 叙事记忆
+    "narrative_memory": {
+      "summary_lines": ["玩家进入走廊", "玩家与守卫交谈"],
+      "key_facts": ["守卫持有钥匙", "玩家需要进入档案室"],
+      "stable_facts": ["档案室在走廊尽头"]
+    },
+    
+    // NPC世界观 - 每个激活NPC的详细状态
+    "npc_world_views": [
+      {
+        "npc_id": "char-guard-01",
+        "name": "守卫",
+        "location": "map-corridor-01",    // 当前位置
+        
+        // 状态
+        "status": {
+          "hp": 10,        // 生命值
+          "max_hp": 10,    // 最大生命值
+          "san": 45        // 理智值
+        },
+        
+        // 属性（COC七版规则）
+        "attributes": {
+          "str": 60,       // 力量
+          "con": 60,       // 体质
+          "siz": 65,       // 体型
+          "dex": 50,       // 敏捷
+          "app": 55,       // 外貌
+          "int": 50,       // 智力
+          "pow": 50,       // 意志
+          "edu": 45        // 教育
+        },
+        
+        "basic_info": "夜班守卫，工作5年",
+        "description_public": "一个穿着制服的中年男子",
+        "description_hint": "性格谨慎，但容易被说服，对玩家有轻微好感",
+        
+        // 记忆
+        "memory": {
+          "current_event": "玩家请求借用钥匙",
+          "log": ["玩家进入走廊", "玩家主动搭话"]
+        }
+      },
+      {
+        "npc_id": "char-archivist-01",
+        "name": "馆藏管理员",
+        "location": "map-corridor-01",
+        "status": { "hp": 8, "max_hp": 8, "san": 55 },
+        "attributes": { ... },
+        "basic_info": "档案室管理员，学者气质",
+        "description_public": "戴着眼镜的老者",
+        "description_hint": "不轻易介入冲突，保持中立",
+        "memory": {
+          "current_event": "",
+          "log": []
+        }
+      }
+    ]
+  },
+  
+  // 约束规则
+  "constraints": {
+    "enums": {
+      // 响应模式
+      "mode": ["unified"],  // 统一响应模式
+      
+      // 动作类型枚举
+      "action_type": [
+        "attack",      // 攻击
+        "move",        // 移动
+        "talk",        // 对话
+        "use_item",    // 使用物品
+        "investigate", // 调查
+        "wait",        // 等待
+        "custom"       // 自定义
+      ],
+      
+      // 检定难度
+      "check_difficulty": ["常规", "困难", "极难"]
+    },
+    "rules": {
+      "must_reference_existing_ids": true,      // 引用的ID必须存在
+      "max_actions_per_turn": 3,                // 每回合最多动作数
+      "avoid_npc_narrative_conflict": true      // 避免NPC间叙事冲突
+    }
+  },
+  
+  // 记忆策略
+  "memory_policy": {
+    "prefer_recent_turns": true,               // 优先参考近期回合
+    "must_follow_player_truth_anchor": true    // 必须遵守玩家事实锚点
+  },
+  
+  // 扩展信息
+  "extensions": {
+    "recent_events": [                         // 最近事件（最多10条）
+      {"event": "玩家进入走廊", "timestamp": "..."}
+    ],
+    "narrative_context": "当前场景为走廊，守卫正在值班"  // 叙事上下文
+  }
+}
+```
+
+### 3.3 NPCDirector输出字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `actions` | object | NPC动作计划集合，键为NPC ID |
+| `rationale` | string | 本轮整体协调说明 |
+
+每个动作的字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `npc_id` | string | NPC的ID |
+| `action_type` | string | 动作类型枚举值 |
+| `target_id` | string/null | 目标ID |
+| `intent_description` | string | 动作意图描述 |
+| `expected_outcome` | string | 期望结果 |
+| `check` | object | 检定信息 `{check_needed, check_attributes, difficulty}` |
+| `trigger_source` | string | 触发来源（固定为"unified"） |
+| `metadata` | object | 元数据 `{reason}` |
+
+---
+
+## 4. NarrativeMerger（叙事合并器）
+
+### 4.1 职责说明
+将多个叙事片段（玩家行动、多个NPC行动）合并为连贯的回合级叙事，生成回合摘要和新的关键事实。
+
+### 4.2 V2 API 上下文
+
+```json
+{
+  "request_id": "turn-{turn_id}-merge",
+  "turn_id": 12,
+  "phase": "narrative_merge",
+  "payload": {
+    // 回合追踪步骤 - 本回合所有已执行的步骤
+    "turn_trace_steps": [
+      {
+        "step_id": "step-player-1",
+        "turn_id": 12,
+        "actor_id": "char-player-01",
+        "phase": "player",
+        "trigger_source": "player_input",
+        
+        // 意图
+        "intent": {
+          "actor_id": "char-player-01",
+          "raw_input_text": "我想撬开保险箱",
+          "intent_text": "使用撬锁工具打开保险箱",
+          "interaction_type": "action",
+          "check_plan": { ... }
+        },
+        
+        // 结算结果
+        "resolution": {
+          "actor_id": "char-player-01",
+          "phase": "player",
+          "intent_text": "使用撬锁工具打开保险箱",
+          "check_result": { ... },
+          "state_changes": [...],
+          "local_narrative": "你小心翼翼地拨动锁芯，随着一声轻响，保险箱打开了。",
+          "outcome": {
+            "action_succeeded": true,
+            "outcome_type": "success",
+            "consequence_tags": ["noise"]
+          }
+        }
+      },
+      {
+        "step_id": "step-npc-1",
+        "turn_id": 12,
+        "actor_id": "char-guard-01",
+        "phase": "npc",
+        "trigger_source": "unified",
+        "intent": { ... },
+        "resolution": {
+          "actor_id": "char-guard-01",
+          "phase": "npc",
+          "local_narrative": "守卫听到声音，警觉地看向你的方向。"
+        }
+      }
+    ],
+    
+    // 回合事实锚点 - 本回合的确定事实
+    "turn_truth_anchor": {
+      "action_succeeded": true,
+      "state_changes_applied": [...]
+    },
+    
+    // 叙事记忆
+    "narrative_memory": {
+      "summary_lines": ["玩家进入走廊", "玩家尝试撬开保险箱"],
+      "key_facts": ["保险箱在走廊尽头", "守卫在值班"],
+      "stable_facts": ["档案室存放着重要文件"]
+    },
+    
+    // 对话记忆
+    "dialogue_memory": {
+      "recent_dialogues": []
+    }
+  },
+  
+  // 约束规则
+  "constraints": {
+    "rules": {
+      "must_preserve_turn_truth_anchor": true,    // 必须保留回合事实锚点
+      "must_not_invent_new_state_change": true,   // 不能发明新状态变更
+      "max_merged_narrative_chars": 1000          // 合并后叙事最大长度
+    }
+  },
+  
+  // 记忆策略
+  "memory_policy": {
+    "summary_write_back_required": true,    // 需要写回摘要
+    "key_fact_write_back_required": true    // 需要写回关键事实
+  }
+}
+```
+
+### 4.3 NarrativeMerger输出字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `merged_narrative` | string | 合并后的完整叙事 |
+| `turn_summary` | string | 回合摘要（用于记忆） |
+| `new_key_facts` | string[] | 新发现的关键事实 |
+| `dialogue_updates` | object[] | 对话更新列表 |
+
+---
+
+## 通用上下文组件
+
+所有LLM Agent共享以下通用上下文组件：
+
+### WorldStateView（世界状态视图）
+
+```json
+{
+  "current_map": {
+    "id": "地图ID",
+    "name": "地图名称",
+    "description": "地图描述",
+    "hint": "内部提示"
+  },
+  "nearby_characters": [...],  // 附近角色
+  "nearby_items": [...],       // 附近物品
+  "player_state": {...},       // 玩家状态
+  "available_exits": [...]     // 可用出口
+}
+```
+
+### DialogueMemory（对话记忆）
+
+```json
+{
+  "recent_dialogues": [
+    {
+      "speaker": "发言者ID或名称",
+      "content": "对话内容"
+    }
+  ]
+}
+```
+
+### NarrativeMemory（叙事记忆）
+
+```json
+{
+  "summary_lines": ["事件摘要1", "事件摘要2"],  // 近期事件摘要（短期记忆）
+  "key_facts": ["关键事实1"],                    // 关键事实（中期记忆）
+  "stable_facts": ["稳定事实1"]                  // 稳定事实（长期记忆，不会改变）
+}
+```
+
+### TurnTrace（回合追踪）
+
+```json
+{
+  "turn_id": 12,
+  "steps": [
+    {
+      "step_id": "步骤ID",
+      "actor_id": "行动者ID",
+      "phase": "player/npc",
+      "resolution": {
+        "local_narrative": "局部叙事",
+        "state_changes": [...]
+      }
+    }
+  ]
+}
+```
+
+---
+
+## 上下文对比表
+
+| 上下文组件 | DMAgent | StateEvolution | NPCDirector | NarrativeMerger |
+|-----------|:-------:|:--------------:|:-----------:|:---------------:|
+| request_id | ✅ | ✅ | ✅ | ✅ |
+| turn_id | ✅ | ✅ | ✅ | ✅ |
+| phase | ✅ | ✅ | ✅ | ✅ |
+| world_state_view | ✅ | ✅ | ✅ | ❌ |
+| dialogue_memory | ✅ | ✅ | ❌ | ✅ |
+| narrative_memory | ✅ | ✅ | ✅ | ✅ |
+| turn_trace_so_far | ✅ | ✅ | ✅ | ✅ (as steps) |
+| turn_intent | ❌ | ✅ | ❌ | ✅ (in steps) |
+| check_result | ❌ | ✅ | ❌ | ❌ |
+| truth_anchor | ❌ | ✅ | ❌ | ✅ |
+| activated_npc_ids | ❌ | ❌ | ✅ | ❌ |
+| npc_world_views | ❌ | ❌ | ✅ | ❌ |
+| player_turn_resolution | ❌ | ✅ (NPC) | ✅ | ❌ |
+| player_action_summary | ❌ | ❌ | ✅ | ❌ |
+| surrounding_context | ❌ | ❌ | ✅ | ❌ |
+| constraints | ✅ | ✅ | ✅ | ✅ |
+| memory_policy | ✅ | ✅ | ✅ | ✅ |
+| extensions | ✅ | ✅ | ✅ | ❌ |
+
+### 图例说明
+
+- ✅ 包含该上下文
+- ❌ 不包含该上下文
+- ✅ (NPC) 仅在NPC阶段包含
+- ✅ (as steps) 以steps形式包含
+- ✅ (in steps) 包含在steps中
+
+---
+
+## 附录：数据流图
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         玩家输入                                 │
+└──────────────────────┬──────────────────────────────────────────┘
+                       ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  DMAgent (意图解析)                                              │
+│  - 接收: world_state_view, dialogue_memory, narrative_memory    │
+│  - 输出: TurnIntent (意图解释)                                  │
+└──────────────────────┬──────────────────────────────────────────┘
+                       ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  CheckSystem (规则结算)                                          │
+│  - 接收: TurnIntent                                              │
+│  - 输出: CheckResult (鉴定结果)                                 │
+└──────────────────────┬──────────────────────────────────────────┘
+                       ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  StateEvolution (状态推演) - 玩家阶段                            │
+│  - 接收: TurnIntent, CheckResult, truth_anchor                  │
+│  - 输出: StateChanges, LocalNarrative                           │
+└──────────────────────┬──────────────────────────────────────────┘
+                       ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  NPCDirector (NPC规划)                                           │
+│  - 接收: activated_npcs, npc_world_views, player_resolution     │
+│  - 输出: NPCActionPlans                                          │
+└──────────────────────┬──────────────────────────────────────────┘
+                       ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  StateEvolution (状态推演) - NPC阶段                             │
+│  - 接收: NPCActionPlan, player_resolution                       │
+│  - 输出: StateChanges, LocalNarrative                           │
+└──────────────────────┬──────────────────────────────────────────┘
+                       ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  NarrativeMerger (叙事合并)                                      │
+│  - 接收: TurnTraceSteps, narrative_memory                       │
+│  - 输出: MergedNarrative, TurnSummary, KeyFacts                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+*文档结束*

@@ -146,7 +146,9 @@ class DMAgent:
         self,
         llm_service: Optional[LLMService] = None,
         system_prompt: Optional[str] = None,
-        max_history: int = 5
+        max_history: int = 5,
+        debug_logger: Optional[Any] = None,
+        debug_agent_name: str = "dm_agent",
     ):
         """
         初始化DM Agent
@@ -167,6 +169,8 @@ class DMAgent:
         
         # 配置参数
         self.max_history = max_history
+        self.debug_logger = debug_logger
+        self.debug_agent_name = debug_agent_name
         
         logger.info("DM Agent初始化完成")
     
@@ -230,14 +234,26 @@ class DMAgent:
         try:
             for attempt in range(1, 3):
                 prompt_with_feedback = self._append_error_feedback(prompt, error_feedback)
-                response = self.llm_service.call_llm_json(
+                response = self._call_llm_json_compatible(
                     prompt=prompt_with_feedback,
                     schema=DMAGENT_OUTPUT_SCHEMA,
+                    debug_logger=self.debug_logger,
+                    debug_agent=self.debug_agent_name,
+                    debug_context={
+                        "request_id": request.request_id,
+                        "phase": "dm_processing",
+                        "player_input": player_input,
+                        "has_error_feedback": bool(error_feedback),
+                    },
+                    debug_call_id=f"{request.request_id}-dm",
+                    debug_attempt=attempt,
                 )
 
                 if not response.get("success"):
                     error_feedback = response.get("error", "未知错误")
                     logger.warning(f"DM输出失败(第{attempt}次): {error_feedback}")
+                    if self.debug_logger and hasattr(self.debug_logger, "log_llm_retry"):
+                        self.debug_logger.log_llm_retry(self.debug_agent_name, attempt, error_feedback)
                     continue
 
                 data = response.get("data", {})
@@ -249,6 +265,8 @@ class DMAgent:
                     if llm_erro:
                         error_feedback = f"{error_feedback}；LLM erro字段: {llm_erro}"
                     logger.warning(f"DM输出解析失败(第{attempt}次): {error_feedback}")
+                    if self.debug_logger and hasattr(self.debug_logger, "log_llm_retry"):
+                        self.debug_logger.log_llm_retry(self.debug_agent_name, attempt, error_feedback)
                     continue
 
                 validation_error = self._validate_output(output, game_state)
@@ -260,6 +278,8 @@ class DMAgent:
                 if llm_erro:
                     error_feedback = f"{error_feedback}；LLM erro字段: {llm_erro}"
                 logger.warning(f"DM输出校验失败(第{attempt}次): {error_feedback}")
+                if self.debug_logger and hasattr(self.debug_logger, "log_llm_retry"):
+                    self.debug_logger.log_llm_retry(self.debug_agent_name, attempt, error_feedback)
 
             return self._create_fallback_output(player_input, f"DM输出校验失败: {error_feedback}")
 
@@ -279,6 +299,17 @@ class DMAgent:
             f"{error_feedback}\n\n"
             "请根据以上错误反馈修正输出，确保check_attributes只使用当前规则支持的属性字段。"
         )
+
+    def _call_llm_json_compatible(self, **kwargs) -> Dict[str, Any]:
+        try:
+            return self.llm_service.call_llm_json(**kwargs)
+        except TypeError as e:
+            if "unexpected keyword argument" not in str(e):
+                raise
+            return self.llm_service.call_llm_json(
+                prompt=kwargs.get("prompt", ""),
+                schema=kwargs.get("schema", {}),
+            )
 
     def _validate_output(self, output: DMAgentOutput, game_state: Optional[GameState]) -> Optional[str]:
         """校验DM输出与规则系统兼容性，返回错误信息或None。"""
