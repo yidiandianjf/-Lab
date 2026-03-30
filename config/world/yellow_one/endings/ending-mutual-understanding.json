@@ -1,7 +1,0 @@
-{
-  "id": "ending-mutual-understanding",
-  "priority": 70,
-  "condition_expr": "all(player_at:map-rooftop-01,has_item:item-diary-01,has_item:item-old-photo-01)",
-  "is_bad_ending": false,
-  "end_narrative": "在天台上，你把日记本和旧照片放在龚渝媛面前。她没有说话，只是静静地看着那些记录着她过去的物品。你第一次看到了她眼中真实的情绪——不是那种精心设计的天真，而是深藏的恐惧和孤独。'我也害怕被抛弃，'你轻声说，'但我们不必用伤害彼此的方式来确认自己的价值。'龚渝媛低下头，泪水滴在了日记本上。这不是游戏的结局，而是一个新的开始——两个受伤的灵魂，终于找到了彼此理解的可能。"
-}
