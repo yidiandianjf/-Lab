@@ -1,0 +1,7 @@
+{
+  "id": "ending-death",
+  "priority": 1000,
+  "condition_expr": "player_hp_le_0",
+  "is_bad_ending": true,
+  "end_narrative": "你倒在黑暗里，图书馆重新归于沉寂。"
+}

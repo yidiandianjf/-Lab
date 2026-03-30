@@ -1,0 +1,38 @@
+{
+  "id": "char-guard-01",
+  "name": "老守卫",
+  "basic_info": "图书馆夜班守卫，在这里工作了二十多年，知道一些不能公开的旧事。",
+  "description": {
+    "public": [
+      {
+        "description": "一位头发花白的老人，穿着神色的守卫制服，眼神里混着疲惦与警惕。"
+      }
+    ],
+    "hint": "他对外来者抱有戒心，但如果玩家表现出尊重、克制和诚意，他可能会透露地下通道的线索。"
+  },
+  "location": "map-room-corridor-01",
+  "inventory": [
+    "item-key-01"
+  ],
+  "status": {
+    "hp": 10,
+    "max_hp": 10,
+    "san": 45,
+    "lucky": 40
+  },
+  "attributes": {
+    "str": 11,
+    "con": 12,
+    "siz": 13,
+    "dex": 10,
+    "app": 9,
+    "int": 11,
+    "pow": 12,
+    "edu": 10
+  },
+  "memory": {
+    "current_event": "",
+    "log": []
+  },
+  "is_player": false
+}

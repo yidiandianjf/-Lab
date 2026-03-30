@@ -1,0 +1,27 @@
+debug:
+  enabled: true
+  log_level: "debug"
+  log_dir: "logs"
+  
+  outputs:
+    master_log: true
+    timeline_json: true
+    categorized: true
+    snapshots: true
+    llm_prompts: true
+  
+  performance:
+    track_llm_latency: true
+    track_phase_duration: true
+    track_memory_usage: false
+  
+  consistency:
+    check_after_each_change: true
+    check_after_turn: true
+    warn_on_inconsistency: true
+  
+  retention:
+    keep_sessions: 30
+    archive_after_days: 7
+  
+  session_id_format: "%Y%m%d_%H%M%S"

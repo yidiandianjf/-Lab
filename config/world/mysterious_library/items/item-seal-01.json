@@ -1,0 +1,14 @@
+{
+  "id": "item-seal-01",
+  "name": "封蜚徽记",
+  "description": {
+    "public": [
+      {
+        "description": "一枚退色的封蜚徽记，上面刻着守护者协会的旧标志。"
+      }
+    ],
+    "hint": "这是打开档案柜某个抽屉的代替品，也可能是向馆藏管理员证明你不是外人的凭证。"
+  },
+  "location": "map-room-secret-01",
+  "is_portable": true
+}

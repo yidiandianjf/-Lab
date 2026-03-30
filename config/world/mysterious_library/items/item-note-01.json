@@ -1,0 +1,14 @@
+{
+  "id": "item-note-01",
+  "name": "泛黄纸条",
+  "description": {
+    "public": [
+      {
+        "description": "一张被折过多次的纸条，边角已经卷起，字迹被潮气浸得有点发癀。"
+      }
+    ],
+    "hint": "纸条上写着：“若想知道他们把什么锁进了地下，就去找档案室。钥匙不在书里，而在守夜人的手里。”"
+  },
+  "location": "map-room-library-01",
+  "is_portable": true
+}

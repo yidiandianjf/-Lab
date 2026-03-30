@@ -1,0 +1,36 @@
+{
+  "id": "char-archivist-01",
+  "name": "馆藏管理员",
+  "basic_info": "负责地下档案室与封存目录的老管理员。",
+  "description": {
+    "public": [
+      {
+        "description": "一个瘦高的中年人，戴着细框眼镜，指尖总有淡淡的墨迹。"
+      }
+    ],
+    "hint": "他知道密室箱子的开启方式，也知道那本旧书背后的真正用途。"
+  },
+  "location": "map-room-library-01",
+  "inventory": [],
+  "status": {
+    "hp": 8,
+    "max_hp": 8,
+    "san": 50,
+    "lucky": 35
+  },
+  "attributes": {
+    "str": 8,
+    "con": 9,
+    "siz": 10,
+    "dex": 12,
+    "app": 10,
+    "int": 15,
+    "pow": 12,
+    "edu": 16
+  },
+  "memory": {
+    "current_event": "",
+    "log": []
+  },
+  "is_player": false
+}

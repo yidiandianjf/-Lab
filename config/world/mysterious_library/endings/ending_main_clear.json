@@ -1,0 +1,7 @@
+{
+  "id": "ending-main-clear",
+  "priority": 100,
+  "condition_expr": "all(player_at:map-room-corridor-01,has_item:item-book-01)",
+  "is_bad_ending": false,
+  "end_narrative": "你带着那本旧书离开了图书馆。真相并不温柔，但至少你活着走了出来。"
+}
