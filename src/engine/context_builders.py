@@ -33,6 +33,7 @@ class WorldStateViewBuilder:
                 exits.append(
                     {
                         "id": one.id,
+                        "map_id": one.id,
                         "direction": one.direction,
                         "description": one.description,
                     }
@@ -49,6 +50,8 @@ class WorldStateViewBuilder:
                         "is_player": char.is_player,
                         "location": char.location,
                         "basic_info": char.basic_info,
+                        "description_public": char.description.get_public_text() if char.description else "",
+                        "description_hint": char.description.hint if char.description else "",
                         "description": char.description.get_public_text() if char.description else "",
                         "hint": char.description.hint if char.description else "",
                     }
@@ -64,6 +67,8 @@ class WorldStateViewBuilder:
                         "name": item.name,
                         "location": item.location,
                         "is_portable": item.is_portable,
+                        "description_public": item.description.get_public_text() if item.description else "",
+                        "description_hint": item.description.hint if item.description else "",
                         "description": item.description.get_public_text() if item.description else "",
                         "hint": item.description.hint if item.description else "",
                     }
@@ -73,6 +78,8 @@ class WorldStateViewBuilder:
             current_map={
                 "id": current_map.id,
                 "name": current_map.name,
+                "description_public": current_map.description.get_public_text(),
+                "description_hint": current_map.description.hint,
                 "description": current_map.description.get_public_text(),
                 "hint": current_map.description.hint,
             }
@@ -83,6 +90,9 @@ class WorldStateViewBuilder:
             player_state={
                 "id": actor.id,
                 "name": actor.name,
+                "location": actor.location,
+                "description_public": actor.description.get_public_text(),
+                "description_hint": actor.description.hint,
                 "description": actor.description.get_public_text(),
                 "hint": actor.description.hint,
                 "status": {
@@ -111,14 +121,22 @@ class DialogueMemoryBuilder:
 
     def build(self, dialogue_log: List[Dict[str, str]]) -> DialogueMemoryView:
         entries: List[DialogueMemoryEntry] = []
-        for one in dialogue_log[-20:]:
+        for one in dialogue_log:
             if not isinstance(one, dict):
                 continue
             speaker = str(one.get("speaker", "")).strip()
             content = str(one.get("content", "")).strip()
             if content:
                 entries.append(DialogueMemoryEntry(speaker=speaker, content=content))
-        return DialogueMemoryView(recent_dialogues=entries)
+                continue
+
+            legacy_player = str(one.get("player_input", "")).strip()
+            legacy_dm = str(one.get("dm_response", "")).strip()
+            if legacy_player:
+                entries.append(DialogueMemoryEntry(speaker="player", content=legacy_player))
+            if legacy_dm:
+                entries.append(DialogueMemoryEntry(speaker="narrator", content=legacy_dm))
+        return DialogueMemoryView(recent_dialogues=entries[-20:])
 
 
 class NarrativeMemoryBuilder:

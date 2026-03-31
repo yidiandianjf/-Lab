@@ -89,6 +89,29 @@ class InputSystem:
         if best_punct >= int(limit * 0.6):
             return cut[: best_punct + 1]
         return cut.rstrip() + "..."
+
+    @staticmethod
+    def _is_education_scene(player: Optional[Character]) -> bool:
+        """Use player identity as a lightweight signal for the Daiyu demo scene."""
+        if not player:
+            return False
+        player_id = str(getattr(player, "id", "") or "").strip().lower()
+        player_name = str(getattr(player, "name", "") or "").strip()
+        return player_id == "char-daiyu-01" or player_name == "林黛玉"
+
+    def _status_labels(self, player: Optional[Character]) -> Dict[str, str]:
+        """Return display labels for status fields."""
+        if self._is_education_scene(player):
+            return {
+                "hp": "体力",
+                "san": "心绪",
+                "lucky": "机缘",
+            }
+        return {
+            "hp": "HP",
+            "san": "SAN",
+            "lucky": "幸运",
+        }
     
     def parse_input(self, user_input: str) -> InputResult:
         """
@@ -274,9 +297,13 @@ class InputSystem:
         for char_id in current_map.entities.characters:
             char = game_state.characters.get(char_id)
             if char and (target_name in char.name.lower() or target_name in char_id.lower()):
+                labels = self._status_labels(player)
                 description = f"【{char.name}】\n"
                 description += char.description.get_public_text() + "\n"
-                description += f"\n状态: HP {char.status.hp}/{char.status.max_hp}, SAN {char.status.san}, 幸运 {char.status.lucky}"
+                description += (
+                    f"\n状态: {labels['hp']} {char.status.hp}/{char.status.max_hp}, "
+                    f"{labels['san']} {char.status.san}, {labels['lucky']} {char.status.lucky}"
+                )
                 return description, changes
         
         # 搜索物品
@@ -478,15 +505,16 @@ class InputSystem:
             Tuple[描述文本, 变更列表]
         """
         changes = []
+        labels = self._status_labels(player)
         
         description = f"【{player.name}】\n"
         description += f"简介: {player.basic_info}\n\n"
         
         # 状态
         description += "【状态】\n"
-        description += f"  HP: {player.status.hp}/{player.status.max_hp}\n"
-        description += f"  SAN: {player.status.san}/100\n"
-        description += f"  幸运: {player.status.lucky}/99\n\n"
+        description += f"  {labels['hp']}: {player.status.hp}/{player.status.max_hp}\n"
+        description += f"  {labels['san']}: {player.status.san}/100\n"
+        description += f"  {labels['lucky']}: {player.status.lucky}/99\n\n"
         
         # 属性
         description += "【属性】\n"
@@ -773,9 +801,9 @@ class InputSystem:
         
         help_text += "【自然语言】\n"
         help_text += "直接输入你想做的事情，例如:\n"
-        help_text += "  '我要仔细搜查这个房间'\n"
-        help_text += "  '询问守卫关于钥匙的事'\n"
-        help_text += "  '用撬棍打开箱子'\n"
+        help_text += "  '我向婆子问安，请她带我从西角门进去'\n"
+        help_text += "  '我整理衣襟，随婆子往贾母正房去'\n"
+        help_text += "  '我给外祖母行礼，再轻声答王熙凤的话'\n"
         
         return help_text, changes
     

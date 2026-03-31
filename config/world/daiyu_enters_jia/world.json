@@ -1,0 +1,18 @@
+{
+  "world_id": "world-daiyu-enters-jia",
+  "world_name": "daiyu_enters_jia",
+  "player_id": "char-daiyu-01",
+  "start_map_id": "map-gate-01",
+  "turn_order": [
+    "char-daiyu-01",
+    "char-servant-01",
+    "char-jiamu-01",
+    "char-xifeng-01"
+  ],
+  "narrative_window": 6,
+  "npc_response_mode": "unified",
+  "npc_director_use_llm": true,
+  "narrative_merge_use_llm": true,
+  "end_condition": "完成荣国府入门、穿堂过渡与贾母正房初见，体会《红楼梦》中礼仪、亲情与人物关系的教育意义。",
+  "entry_scene_narrative": "轿子在荣国府前缓缓停下。石狮森然，门庭赫奕，几个婆子和丫鬟早已迎候在侧。你捏着素白手帕，想起母亲生前的叮嘱，只觉步步都要留心，句话都要斟酌。"
+}

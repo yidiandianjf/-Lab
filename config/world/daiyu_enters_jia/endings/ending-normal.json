@@ -1,0 +1,7 @@
+{
+  "id": "ending-normal",
+  "priority": 100,
+  "condition_expr": "all(player_at:map-jiamu-room-01,key_facts_contains:已见贾母,key_facts_contains:已见王熙凤)",
+  "is_bad_ending": false,
+  "end_narrative": "你在贾母跟前一一见过礼，又听凤姐爽利地替你张罗住处，心里虽仍酸楚，却也稍稍定了下来。窗外廊下人声渐远，这一日初进贾府的惶惑与体察，都悄悄沉进了记忆里。"
+}

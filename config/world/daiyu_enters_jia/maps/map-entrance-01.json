@@ -1,0 +1,29 @@
+{
+  "id": "map-entrance-01",
+  "name": "垂花门",
+  "parent_id": null,
+  "description": {
+    "public": [
+      {
+        "description": "穿过角门，便见垂花门内抄手游廊相接，中间设着穿堂，紫檀架子大理石插屏端然立着，将内外院落分得分明。脚步声一轻，连说话也不由自主低了几分。"
+      }
+    ],
+    "hint": "外院过渡到内院的关键空间。这里要强化'眼观鼻，鼻观心'的礼仪氛围，让玩家意识到自己正一步步进入贾府核心。"
+  },
+  "neighbors": [
+    {
+      "id": "map-gate-01",
+      "direction": "外",
+      "description": "退回荣国府大门处"
+    },
+    {
+      "id": "map-jiamu-room-01",
+      "direction": "内",
+      "description": "绕过插屏，前往贾母正房"
+    }
+  ],
+  "entities": {
+    "characters": [],
+    "items": []
+  }
+}

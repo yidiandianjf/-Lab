@@ -1,0 +1,27 @@
+{
+  "id": "map-jiamu-room-01",
+  "name": "贾母正房",
+  "parent_id": null,
+  "description": {
+    "public": [
+      {
+        "description": "正房陈设华贵而不俗，炕褥、屏风、熏炉都收拾得妥帖整洁，暖意融融。屋内众人说笑有度，却都隐隐以炕上老祖宗为中心，尊卑亲疏一望可知。"
+      }
+    ],
+    "hint": "核心教育场景。这里要突出贾母的慈爱权威、王熙凤的爽利机敏，以及黛玉初次见亲的情感波动。完成与贾母、王熙凤的首次会面后，场景可收束为正常结局。"
+  },
+  "neighbors": [
+    {
+      "id": "map-entrance-01",
+      "direction": "外",
+      "description": "由正房退回垂花门一带"
+    }
+  ],
+  "entities": {
+    "characters": [
+      "char-jiamu-01",
+      "char-xifeng-01"
+    ],
+    "items": []
+  }
+}

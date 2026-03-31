@@ -121,6 +121,47 @@ class DisplayManager:
     def __init__(self, use_colors: bool = True):
         self.use_colors = use_colors
         self.formatter = TextFormatter()
+
+    @staticmethod
+    def _is_education_scene(world_name: str = "") -> bool:
+        return str(world_name or "").strip().lower() == "daiyu_enters_jia"
+
+    def _status_labels(self, world_name: str = "") -> Dict[str, str]:
+        if self._is_education_scene(world_name):
+            return {
+                "hp": "体力",
+                "san": "心绪",
+                "lucky": "机缘",
+            }
+        return {
+            "hp": "HP",
+            "san": "SAN",
+            "lucky": "幸运",
+        }
+
+    def _format_check_detail(self, detail: str, world_name: str = "") -> str:
+        normalized = str(detail or "")
+        if not normalized:
+            return normalized
+        if self._is_education_scene(world_name):
+            replacements = {
+                "使用属性:": "依据项:",
+                "san": "心绪",
+                "hp": "体力",
+                "lucky": "机缘",
+                "luck": "机缘",
+                "pow": "心志",
+                "dex": "敏捷",
+                "app": "风仪",
+                "int": "悟性",
+                "edu": "学识",
+                "str": "气力",
+                "con": "体质",
+                "siz": "体格",
+            }
+            for source, target in replacements.items():
+                normalized = normalized.replace(source, target)
+        return normalized
     
     def clear_screen(self):
         """清屏"""
@@ -131,15 +172,11 @@ class DisplayManager:
         title = """
 ╔═══════════════════════════════════════════════════════════════╗
 ║                                                               ║
-║          ██████╗ ██████╗  ██████╗    ██╗   ██╗██████╗         ║
-║         ██╔════╝██╔═══██╗██╔════╝    ██║   ██║╚════██╗        ║
-║         ██║     ██║   ██║██║         ██║   ██║ █████╔╝        ║
-║         ██║     ██║   ██║██║         ╚██╗ ██╔╝██╔═══╝         ║
-║         ╚██████╗╚██████╔╝╚██████╗     ╚████╔╝ ███████╗        ║
-║          ╚═════╝ ╚═════╝  ╚═════╝      ╚═══╝  ╚══════╝        ║
+║                    AI 阅读实验室演示场景                      ║
 ║                                                               ║
+║                 红楼梦 · 黛玉初进贾府                         ║
 ║                                                               ║
-║              Call of Cthulhu Text Adventure                   ║
+║                  沉浸式阅读与礼仪体验                         ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
         """
@@ -240,7 +277,7 @@ class DisplayManager:
             return cut[: best_punct + 1]
         return cut.rstrip() + "..."
     
-    def print_player_status(self, game_state: GameState):
+    def print_player_status(self, game_state: GameState, world_name: str = ""):
         """打印玩家状态"""
         player = game_state.get_player()
         if not player:
@@ -253,11 +290,12 @@ class DisplayManager:
         # SAN条
         san_percent = player.status.san / 100
         san_bar = self._make_bar(san_percent, 20, Colors.BLUE)
+        labels = self._status_labels(world_name)
         
         print(self.formatter.section(f"{player.name}的状态"))
-        print(f"  HP:  [{hp_bar}] {player.status.hp}/{player.status.max_hp}")
-        print(f"  SAN: [{san_bar}] {player.status.san}/100")
-        print(f"  幸运: {player.status.lucky}")
+        print(f"  {labels['hp']}:  [{hp_bar}] {player.status.hp}/{player.status.max_hp}")
+        print(f"  {labels['san']}: [{san_bar}] {player.status.san}/100")
+        print(f"  {labels['lucky']}: {player.status.lucky}")
     
     def _make_bar(self, percent: float, width: int, color: str) -> str:
         """制作进度条"""
@@ -270,7 +308,7 @@ class DisplayManager:
         """打印叙事文本"""
         print(f"\n{self.formatter.narrative(text)}")
     
-    def print_check_result(self, check_result: CheckOutput):
+    def print_check_result(self, check_result: CheckOutput, world_name: str = ""):
         """打印鉴定结果"""
         result_colors = {
             "大成功": Colors.BG_GREEN + Colors.WHITE,
@@ -310,13 +348,15 @@ class DisplayManager:
             actor_value = check_result.get("actor_value", "-")
             detail = check_result.get("detail", "")
 
-        print(f"\n{self.formatter.section('鉴定结果')}")
+        title = "情境判定" if self._is_education_scene(world_name) else "鉴定结果"
+        actor_label = "依据值" if self._is_education_scene(world_name) else "属性值"
+        print(f"\n{self.formatter.section(title)}")
         print(f"  骰子结果: {dice_roll}")
         print(f"  目标值: {target_value}")
-        print(f"  属性值: {actor_value}")
+        print(f"  {actor_label}: {actor_value}")
         print(f"  结果: {color}{Colors.BOLD}{result_text}{Colors.RESET}")
         if detail:
-            print(f"  详情: {detail}")
+            print(f"  详情: {self._format_check_detail(detail, world_name)}")
     
     def print_event(self, event: str):
         """打印事件信息"""
@@ -463,8 +503,8 @@ class GameCLI:
         """显示欢迎界面"""
         self.display.clear_screen()
         self.display.print_title()
-        print("\n欢迎使用COC文字冒险游戏！")
-        print("输入 \\help 查看可用指令，或直接用自然语言描述你的行动。\n")
+        print("\n欢迎进入《红楼梦·黛玉初进贾府》教育场景。")
+        print("输入 \\help 查看可用指令，或直接用自然语言描述林黛玉的言行。\n")
     
     def show_main_menu(self) -> str:
         """
@@ -519,7 +559,10 @@ class GameCLI:
                 
                 # 检查游戏是否结束
                 if game_engine.is_game_over():
-                    self.display.print_game_over(game_engine.get_ending_text())
+                    ending_text = game_engine.get_ending_text()
+                    if self._narrative_contains_text(self._last_displayed_narrative, ending_text):
+                        ending_text = ""
+                    self.display.print_game_over(ending_text)
                     if self.input_handler.confirm("重新开始？"):
                         game_engine.restart()
                     else:
@@ -552,7 +595,10 @@ class GameCLI:
         self.display.print_items(game_state)
         
         # 显示玩家状态
-        self.display.print_player_status(game_state)
+        self.display.print_player_status(
+            game_state,
+            world_name=getattr(game_engine, "world_name", ""),
+        )
         
         # 显示当前事件（如果有）
         player = game_state.get_player()
@@ -582,13 +628,23 @@ class GameCLI:
         
         # 显示鉴定结果
         if result.get("check_result"):
-            self.display.print_check_result(result["check_result"])
+            world_name = getattr(self.game_engine, "world_name", "") if self.game_engine else ""
+            self.display.print_check_result(result["check_result"], world_name=world_name)
         
         # 显示叙事文本
         if result.get("narrative"):
             narrative = result["narrative"]
             self.display.print_narrative(narrative)
             self._last_displayed_narrative = narrative
+
+    @staticmethod
+    def _narrative_contains_text(narrative: str, target_text: str) -> bool:
+        """Return True when the ending text has already been shown in the narrative block."""
+        normalized_narrative = " ".join(str(narrative or "").split())
+        normalized_target = " ".join(str(target_text or "").split())
+        if not normalized_narrative or not normalized_target:
+            return False
+        return normalized_target in normalized_narrative
     
     def get_player_name(self) -> str:
         """获取玩家名称"""

@@ -22,6 +22,11 @@ Last Updated: 2026-03-28
 - 不得生成代码无法验证的状态变更
 - state_changes仅作为提案，最终由代码校验后执行
 
+**世界优先原则：**
+- 默认服从当前世界配置，不得把所有场景都推演成COC式惊悚或战斗
+- `san` 的含义随世界语境变化：在教育/古典文学场景中，更适合体现紧张、惊惧、羞怯、情绪波动与心理负荷
+- 对礼仪、态度、观察、引路、进退有度等低烈度事件，优先通过 `local_narrative`、位置移动、轻量状态变化或 `description.add` 表达，不要无端制造伤害与冲突
+
 ---
 
 ## 2. 信息链路位置（九要素模型）
@@ -326,6 +331,7 @@ Last Updated: 2026-03-28
    - 基于检定结果和事实锚点，生成合理的变更
    - 使用允许的四种操作（update/add/del/move）
    - 只操作真实存在的字段
+   - 教育场景优先考虑移动、对话引发的态度变化、情绪波动、环境补充描述等可验证后果
 
 5. **生成局部叙事**
    - 描述本步骤发生的具体事件
@@ -337,7 +343,11 @@ Last Updated: 2026-03-28
    - 根据阶段设置outcome_type
    - 添加适当的consequence_tags
 
-7. **自检输出**
+7. **世界适配自检**
+   - 当前世界若是古典文学、校园、历史等非恐怖场景，避免输出不合语境的暴力或惊悚结论
+   - 对时代错位的输入，可把后果收敛为“众人困惑、以为失言、气氛一滞”等世界内结果，而不是跳出设定解释
+
+8. **自检输出**
    - state_changes中的ID是否都存在？
    - 操作是否符合constraints.rules？
    - local_narrative是否与变更一致？
@@ -365,10 +375,14 @@ Last Updated: 2026-03-28
    - move操作仅限于field="location"
   - 角色MOVE目标必须是`map-xxx`；物品MOVE目标必须是`char-xxx`或`map-xxx`
 
-3. **NPC阶段特殊约束**
+3. **场景语义约束**
+   - 教育/古典文学场景优先保持人物礼仪、情感与秩序感
+   - 若没有明确暴力事实锚点，不要输出攻击、重伤、疯狂等过强后果
+
+4. **NPC阶段特殊约束**
    - 不得覆盖玩家阶段的truth_anchor
    - 不得重复turn_trace_so_far中已存在的变更
-   - 响应必须基于player_turn_resolution
+   - 响应必须基于 turn_trace_so_far、truth_anchor 与当前 npc_action_plan 中已知的玩家结果
 
 ### 6.2 禁止事项
 
@@ -450,7 +464,7 @@ Last Updated: 2026-03-28
     "state_changes": [
       {
         "id": "char-player-01",
-        "field": "description.public",
+        "field": "description.add",
         "operation": "add",
         "value": {"description": "你判断守卫在隐瞒信息"}
       },
@@ -514,7 +528,7 @@ Last Updated: 2026-03-28
     "state_changes": [
       {
         "id": "char-player-01",
-        "field": "description.public",
+        "field": "description.add",
         "operation": "add",
         "value": {"description": "守卫提醒你不要在走廊停留太久"}
       }

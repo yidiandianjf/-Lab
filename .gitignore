@@ -1,7 +1,15 @@
 # 敏感配置
 config/llm.json
 
-# 存档数据
+# 虚拟环境
+.venv/
+venv/
+
+# 存档与运行数据库
+data/*.db
+data/*.db-*
+data/*.sqlite
+data/*.sqlite3
 data/saves/*.json
 
 # 环境变量
@@ -14,6 +22,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
+.pytest_cache/
 build/
 develop-eggs/
 dist/

@@ -25,7 +25,7 @@ from src.data.models import (
     StateEvolutionOutput,
     CheckType, CheckDifficulty,
     ActivationHint, CheckPlan, DialogueMemoryView, NarrativeMemoryView,
-    OutcomeSummary, TurnIntent, TurnResolution, TurnStep, TurnTrace, TurnTraceDigest,
+    NarrativeMergerOutputV2, OutcomeSummary, TurnIntent, TurnResolution, TurnStep, TurnTrace, TurnTraceDigest,
 )
 from src.agent.input_system import InputSystem, InputResult, InputType
 from src.agent.dm_agent import DMAgent
@@ -133,6 +133,8 @@ class GameEngine:
         self._is_game_over = False
         self._npc_director_use_llm = True
         self._narrative_merge_use_llm = True
+        self.entry_scene_narrative = ""
+        self._last_narrative_merge_output: Optional[NarrativeMergerOutputV2] = None
         self.narrative_context = self._create_narrative_context(window_size=narrative_window)
         self.narrative_merger = self._create_narrative_merger()
         self.npc_director = self._create_npc_director()
@@ -164,7 +166,7 @@ class GameEngine:
     
     def new_game(
         self,
-        world_name: str = "mysterious_library"
+        world_name: str = "daiyu_enters_jia"
     ) -> bool:
         """
         开始新游戏
@@ -196,6 +198,7 @@ class GameEngine:
                 window_size=getattr(self.narrative_context, "window_size", 5) if self.narrative_context else 5
             )
             self._pending_npc_action_plans = {}
+            self._last_narrative_merge_output = None
             
             bundle = load_initial_world_bundle(
                 self.io,
@@ -210,6 +213,8 @@ class GameEngine:
                 bundle.narrative_window,
                 bundle.npc_director_use_llm,
                 bundle.narrative_merge_use_llm,
+                entry_scene_narrative=bundle.entry_scene_narrative,
+                prime_entry_scene=True,
             )
             
             # 初始化回合
@@ -277,6 +282,7 @@ class GameEngine:
                 world_metadata = {
                     "world_name": save_data.pop("world_name", self.world_name),
                     "end_condition": save_data.pop("end_condition", self.end_condition),
+                    "entry_scene_narrative": save_data.pop("entry_scene_narrative", self.entry_scene_narrative),
                     "npc_response_mode": save_data.pop("npc_response_mode", self._npc_response_mode),
                     "narrative_window": save_data.pop("narrative_window", getattr(self.narrative_context, "window_size", 5) if self.narrative_context else 5),
                     "npc_director_use_llm": save_data.pop("npc_director_use_llm", self._npc_director_use_llm),
@@ -292,6 +298,7 @@ class GameEngine:
                 narrative_window=int(world_metadata.get("narrative_window", getattr(self.narrative_context, "window_size", 5) if self.narrative_context else 5) or 5),
                 npc_director_use_llm=bool(world_metadata.get("npc_director_use_llm", self._npc_director_use_llm)),
                 narrative_merge_use_llm=bool(world_metadata.get("narrative_merge_use_llm", self._narrative_merge_use_llm)),
+                entry_scene_narrative=str(world_metadata.get("entry_scene_narrative", self.entry_scene_narrative) or ""),
             )
             self._is_game_over = False
             
@@ -336,6 +343,7 @@ class GameEngine:
             save_data["world_metadata"] = {
                 "world_name": self.world_name,
                 "end_condition": self.end_condition,
+                "entry_scene_narrative": self.entry_scene_narrative,
                 "npc_response_mode": self._npc_response_mode,
                 "narrative_window": getattr(self.narrative_context, "window_size", 5) if self.narrative_context else 5,
                 "npc_director_use_llm": self._npc_director_use_llm,
@@ -354,7 +362,7 @@ class GameEngine:
     
     def restart(self):
         """重新开始游戏"""
-        target_world = self.world_name if self.world_name else "mysterious_library"
+        target_world = self.world_name if self.world_name else "daiyu_enters_jia"
         self.new_game(target_world)
 
     def apply_world_settings(
@@ -365,10 +373,13 @@ class GameEngine:
         narrative_window: Optional[int] = None,
         npc_director_use_llm: Optional[bool] = None,
         narrative_merge_use_llm: Optional[bool] = None,
+        entry_scene_narrative: Optional[str] = None,
+        prime_entry_scene: bool = False,
     ):
         """应用世界级配置（例如来自world.json）。"""
         self.world_name = world_name
         self.end_condition = end_condition or self.end_condition
+        self.entry_scene_narrative = str(entry_scene_narrative or "").strip()
         if npc_response_mode is not None:
             self.set_npc_response_mode(npc_response_mode)
         if narrative_window is not None:
@@ -382,6 +393,8 @@ class GameEngine:
         # 让状态推演系统共享同一结局条件
         self.state_agent.end_condition = self.end_condition
         self._load_ending_rules()
+        if prime_entry_scene:
+            self._prime_entry_scene_narrative()
     
     # ============================================================
     # 核心游戏循环
@@ -529,13 +542,30 @@ class GameEngine:
             interaction_type = str(getattr(dm_output, "interaction_type", "action") or "action")
             is_dialogue_turn = interaction_type in {"dialogue", "mixed"}
             has_player_action = interaction_type in {"action", "mixed"}
+            dialogue_supplemental_changes = self._build_education_scene_status_changes(
+                natural_input,
+                check_output=None,
+                existing_changes=None,
+            )
             
             # 纯对话场景优先返回玩家可见回复，但如果 DM 明确要求 NPC 继续响应，
             # 仍然保留后续流程，避免把“对话”误判成“流程终止”。
             if is_dialogue_turn:
-                result["response"] = dm_output.response_to_player
-                self._record_dm_dialogue(natural_input, dm_output.response_to_player)
+                dm_response = str(dm_output.response_to_player or "").strip()
+                if not dm_response:
+                    dm_response = self._build_dialogue_fallback_response(
+                        natural_input,
+                        dm_output=dm_output,
+                    )
+                result["response"] = dm_response
+                self._record_dm_dialogue(natural_input, dm_response)
                 if not dm_output.npc_response_needed and not has_player_action:
+                    if dialogue_supplemental_changes:
+                        failures = self._apply_changes(dialogue_supplemental_changes)
+                        if failures:
+                            result["success"] = False
+                            result["response"] = f"状态变更失败: {failures[0]}"
+                            return result
                     return result
             
             check_output = None
@@ -566,6 +596,14 @@ class GameEngine:
                     check_result=check_output,
                     player_resolution_anchor=player_resolution_anchor,
                 )
+                if evolution_result is not None:
+                    evolution_result.changes.extend(
+                        self._build_education_scene_status_changes(
+                            natural_input,
+                            check_output=check_output,
+                            existing_changes=evolution_result.changes,
+                        )
+                    )
             
             # DebugLogger: 记录状态变更提案
             if self.debug_logger and evolution_result and evolution_result.changes:
@@ -668,6 +706,7 @@ class GameEngine:
                 player_check=check_output,
                 player_resolution_anchor=player_resolution_anchor,
                 player_turn_intent=turn_intent,
+                player_turn_resolution=player_turn_resolution,
             )
             if npc_follow.get("change_failures"):
                 result["success"] = False
@@ -679,17 +718,22 @@ class GameEngine:
                 fragments,
                 truth_anchor=player_resolution_anchor,
             )
+            self._commit_narrative_merge_output()
 
             result["narrative"] = merged_narrative
             self._current_narrative = merged_narrative
             self._record_dm_dialogue(natural_input, merged_narrative)
 
             if merged_narrative:
+                merge_key_facts = []
+                if self._last_narrative_merge_output and getattr(self._last_narrative_merge_output, "new_key_facts", None):
+                    merge_key_facts = list(self._last_narrative_merge_output.new_key_facts)
                 self._append_narrative_event(
                     actor_id=self.game_state.player_id or "",
                     actor_name=self.game_state.get_player().name if self.game_state.get_player() else "",
                     text=merged_narrative,
                     source="turn_merged",
+                    key_facts=merge_key_facts,
                 )
 
             if npc_follow.get("game_over"):
@@ -1913,11 +1957,140 @@ class GameEngine:
 
     def _record_dm_dialogue(self, player_input: str, dm_response: str):
         """记录玩家与DM的对话历史。"""
-        self.dm_dialogue_log.append({
-            "turn": str(self.game_state.turn_count),
-            "player_input": player_input,
-            "dm_response": dm_response,
-        })
+        turn = str(self.game_state.turn_count)
+        if str(player_input or "").strip():
+            self.dm_dialogue_log.append({
+                "turn": turn,
+                "speaker": "player",
+                "content": str(player_input).strip(),
+            })
+        if str(dm_response or "").strip():
+            self.dm_dialogue_log.append({
+                "turn": turn,
+                "speaker": "dm",
+                "content": str(dm_response).strip(),
+            })
+
+    def _is_education_scene(self) -> bool:
+        """Return True when the current world is the educational Daiyu demo scene."""
+        return str(self.world_name or "").strip().lower() == "daiyu_enters_jia"
+
+    def _build_dialogue_fallback_response(
+        self,
+        player_input: str,
+        dm_output: Optional[DMAgentOutput] = None,
+    ) -> str:
+        """Provide a visible fallback response for dialogue turns with no DM text."""
+        normalized_input = str(player_input or "").strip()
+        lowered_input = normalized_input.lower()
+
+        if self._is_education_scene():
+            if re.search(r"回家|离开|回去|出去|走吧", lowered_input):
+                return (
+                    "这个念头在心头盘桓了一瞬，但此刻你并未真的转身离去。"
+                    "若要离开或前行，可以直接说明要往哪里去。"
+                )
+            if re.search(r"紧张|害怕|心慌|惶恐|忐忑|不安", lowered_input):
+                return "你将这份紧张压在心底，越发收敛神色，只怕在贾府失了礼数。"
+            if re.search(r"难过|伤心|想哭|委屈|悲伤|酸楚", lowered_input):
+                return "一阵酸楚涌上心头，你勉强按住情绪，只把手中的帕子攥得更紧了些。"
+            if re.search(r"不想|不要|不愿", lowered_input):
+                return "你心里虽有几分迟疑，却仍立在原地，并未立刻化作行动。"
+            return (
+                "这句话只在心头轻轻一转，暂未化作真正的行动。"
+                "若要继续推进，可以直接说明要去哪里、和谁说话，或想做什么。"
+            )
+
+        suggested_intent = str(getattr(dm_output, "action_description", "") or "").strip()
+        if suggested_intent:
+            return f"你暂时没有进一步行动。若要推进情节，可以更明确地表达：{suggested_intent}"
+        return "你暂时没有进一步行动。若要推进情节，可以把想做的事说得更具体些。"
+
+    @staticmethod
+    def _clamp_int(value: int, minimum: int, maximum: int) -> int:
+        """Clamp integer values into a bounded range."""
+        return max(minimum, min(maximum, int(value)))
+
+    def _find_pending_field_value(
+        self,
+        changes: Optional[List[StateChange]],
+        entity_id: str,
+        field: str,
+        fallback: int,
+    ) -> int:
+        """Resolve the latest planned value for a field from pending changes."""
+        current_value = fallback
+        for change in changes or []:
+            if change.id != entity_id or change.field != field:
+                continue
+            if change.operation == ChangeOperation.UPDATE:
+                try:
+                    current_value = int(change.value)
+                except (TypeError, ValueError):
+                    current_value = fallback
+        return current_value
+
+    def _build_education_scene_status_changes(
+        self,
+        player_input: str,
+        check_output: Optional[CheckOutput] = None,
+        existing_changes: Optional[List[StateChange]] = None,
+    ) -> List[StateChange]:
+        """Add small, deterministic mood changes for the educational scene."""
+        if not self._is_education_scene():
+            return []
+
+        player = self.game_state.get_player()
+        if not player:
+            return []
+
+        text = str(player_input or "").strip()
+        if not text:
+            return []
+
+        lowered_text = text.lower()
+        base_san = self._find_pending_field_value(
+            existing_changes,
+            player.id,
+            "status.san",
+            player.status.san,
+        )
+
+        san_delta = 0
+
+        if re.search(r"自尽|去死|不想活|不活了|绝望|活不下去|崩溃", lowered_text):
+            san_delta -= 4
+        elif re.search(r"难过|伤心|委屈|想哭|酸楚|悲伤|落泪|啜泣", lowered_text):
+            san_delta -= 2
+        elif re.search(r"紧张|害怕|心慌|惶恐|忐忑|不安|局促", lowered_text):
+            san_delta -= 2
+
+        if re.search(r"镇定|冷静|稳住|定下心|安心|宽慰|释然|从容", lowered_text):
+            san_delta += 2
+        elif re.search(r"行礼|问安|请安|谢过|拜见|恭谨|跟着|随.*进去|入内|进内院", lowered_text):
+            san_delta += 1
+
+        if check_output:
+            if check_output.result in {CheckResult.FAILURE, CheckResult.FUMBLE}:
+                san_delta -= 1
+            elif check_output.result in {CheckResult.SUCCESS, CheckResult.CRITICAL_SUCCESS}:
+                san_delta += 1
+
+        if san_delta == 0:
+            return []
+
+        target_san = self._clamp_int(base_san + san_delta, 0, 100)
+        if target_san == base_san:
+            return []
+
+        return [
+            StateChange(
+                id=player.id,
+                field="status.san",
+                operation=ChangeOperation.UPDATE,
+                value=target_san,
+            )
+        ]
 
     def _create_narrative_context(self, window_size: int = 5):
         """Create a narrative context instance, with a no-op fallback."""
@@ -1939,6 +2112,62 @@ class GameEngine:
             return
 
         self.narrative_context = self._create_narrative_context(window_size=normalized)
+
+    def _prime_entry_scene_narrative(self) -> None:
+        """Seed opening narrative into player-visible memory and narrative context."""
+        text = str(self.entry_scene_narrative or "").strip()
+        if not text:
+            return
+
+        self._current_narrative = text
+        player = self.game_state.get_player()
+        if player:
+            player.memory.current_event = text
+
+        self._append_narrative_event(
+            actor_id=self.game_state.player_id or "",
+            actor_name=player.name if player else "旁白",
+            text=text,
+            source="entry_scene",
+        )
+
+    def _commit_narrative_merge_output(self) -> None:
+        """Write structured merger output back into narrative and dialogue memory."""
+        merge_output = self._last_narrative_merge_output
+        if not merge_output:
+            return
+
+        if self.narrative_context and getattr(merge_output, "new_key_facts", None):
+            for fact in merge_output.new_key_facts:
+                normalized = str(fact or "").strip()
+                if normalized:
+                    self.narrative_context.key_facts.add(normalized)
+
+        dialogue_updates = list(getattr(merge_output, "dialogue_updates", []) or [])
+        if not dialogue_updates:
+            return
+
+        for update in dialogue_updates:
+            if hasattr(update, "model_dump"):
+                payload = update.model_dump()
+            elif isinstance(update, dict):
+                payload = dict(update)
+            else:
+                continue
+
+            speaker = str(payload.get("speaker", "")).strip()
+            content = str(payload.get("content", "")).strip()
+            if not speaker or not content:
+                continue
+
+            entry = {
+                "turn": str(self.game_state.turn_count),
+                "speaker": speaker,
+                "content": content,
+            }
+            if self.dm_dialogue_log and self.dm_dialogue_log[-1] == entry:
+                continue
+            self.dm_dialogue_log.append(entry)
 
     def _create_npc_director(self):
         """Create NPCDirector with a safe fallback to None."""
@@ -2053,6 +2282,7 @@ class GameEngine:
         candidate_npc_ids: Optional[List[str]] = None,
         dm_output: Optional[DMAgentOutput] = None,
         player_resolution_anchor: Optional[Dict[str, Any]] = None,
+        player_turn_resolution: Optional[TurnResolution] = None,
     ) -> Dict[str, Any]:
         """生成本回合NPC行动计划，优先使用NPCDirector，失败时回退到最小可执行计划。"""
         raw_ids = list(candidate_npc_ids or [])
@@ -2101,6 +2331,9 @@ class GameEngine:
                     trigger_source=trigger,
                     recent_events=recent_events,
                     narrative_context=narrative_context,
+                    player_turn_resolution=player_turn_resolution.model_dump(mode="json") if player_turn_resolution else None,
+                    turn_trace_so_far=self._turn_trace_context_builder.build_full(self._current_turn_trace).model_dump(mode="json"),
+                    narrative_memory=self._narrative_memory_builder.build(self._dump_narrative_context()).model_dump(),
                 )
                 actions = getattr(decision, "actions", {}) or {}
                 for npc_id, action in actions.items():
@@ -2291,6 +2524,7 @@ class GameEngine:
         actor_name: str,
         text: str,
         source: str,
+        key_facts: Optional[List[str]] = None,
     ) -> None:
         if not self.narrative_context or NarrativeEvent is None:
             return
@@ -2301,6 +2535,7 @@ class GameEngine:
                 actor_name=actor_name,
                 text=text,
                 source=source,
+                key_facts=list(key_facts or []),
             )
         )
 
@@ -2420,6 +2655,22 @@ class GameEngine:
             item_id = expr.split(":", 1)[1].strip()
             return item_id in player.inventory
 
+        if expr.startswith("key_facts_contains:"):
+            target_fact = expr.split(":", 1)[1].strip()
+            if not target_fact:
+                return False
+            narrative_memory = self._narrative_memory_builder.build(self._dump_narrative_context())
+            known_facts = {str(one).strip() for one in narrative_memory.key_facts if str(one).strip()}
+            return target_fact in known_facts
+
+        if expr.startswith("turn_count_ge:"):
+            raw_threshold = expr.split(":", 1)[1].strip()
+            try:
+                threshold = int(raw_threshold)
+            except (TypeError, ValueError):
+                return False
+            return int(self.game_state.turn_count or 0) >= threshold
+
         return False
 
     def _split_expr_args(self, raw: str) -> List[str]:
@@ -2494,15 +2745,43 @@ class GameEngine:
             return str(action_plan.intent_description)
         return ""
 
+    def _derive_turn_key_facts(self) -> List[str]:
+        """Derive reusable scene facts from NPC turns when merger output is sparse."""
+        facts: List[str] = []
+        seen = set()
+        for step in list(getattr(self._current_turn_trace, "steps", []) or []):
+            if getattr(step, "phase", "") != "npc":
+                continue
+            local_narrative = str(getattr(getattr(step, "resolution", None), "local_narrative", "") or "").strip()
+            if not local_narrative:
+                continue
+
+            actor = self.game_state.characters.get(step.actor_id)
+            if not actor or actor.is_player:
+                continue
+
+            actor_name = str(actor.name or "").strip()
+            if not actor_name:
+                continue
+
+            fact = f"已见{actor_name}"
+            if fact not in seen:
+                seen.add(fact)
+                facts.append(fact)
+
+        return facts
+
     def _merge_turn_narratives(
         self,
         fragments: List[Dict[str, str]],
         truth_anchor: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Merge narrative fragments into a single coherent turn narrative."""
+        self._last_narrative_merge_output = None
         cleaned = [fragment for fragment in fragments if (fragment.get("text") or "").strip()]
         if not cleaned:
             return ""
+        derived_key_facts = self._derive_turn_key_facts()
 
         if self.narrative_merger and hasattr(self.narrative_merger, "merge_v2"):
             v2_result = self.narrative_merger.merge_v2(
@@ -2511,6 +2790,12 @@ class GameEngine:
                 narrative_memory=self._narrative_memory_builder.build(self._dump_narrative_context()),
             )
             if v2_result and v2_result.merged_narrative:
+                merged_facts = list(v2_result.new_key_facts or [])
+                for fact in derived_key_facts:
+                    if fact not in merged_facts:
+                        merged_facts.append(fact)
+                v2_result.new_key_facts = merged_facts
+                self._last_narrative_merge_output = v2_result
                 return v2_result.merged_narrative.strip()
 
         if self.narrative_merger and hasattr(self.narrative_merger, "merge"):
@@ -2521,9 +2806,29 @@ class GameEngine:
                 truth_anchor=truth_anchor,
             )
             if merged:
+                merged = merged.strip()
+                summary = merged[:200].rstrip()
+                if len(merged) > 200:
+                    summary += "..."
+                self._last_narrative_merge_output = NarrativeMergerOutputV2(
+                    merged_narrative=merged,
+                    turn_summary=summary,
+                    new_key_facts=derived_key_facts,
+                    dialogue_updates=[],
+                )
                 return merged.strip()
 
-        return "\n".join(fragment["text"].strip() for fragment in cleaned if fragment.get("text"))
+        merged = "\n".join(fragment["text"].strip() for fragment in cleaned if fragment.get("text"))
+        summary = merged[:200].rstrip()
+        if len(merged) > 200:
+            summary += "..."
+        self._last_narrative_merge_output = NarrativeMergerOutputV2(
+            merged_narrative=merged,
+            turn_summary=summary,
+            new_key_facts=derived_key_facts,
+            dialogue_updates=[],
+        )
+        return merged
 
     def _process_unified_npc_response(
         self,
@@ -2531,6 +2836,7 @@ class GameEngine:
         player_check: Optional[CheckOutput],
         player_resolution_anchor: Optional[Dict[str, Any]] = None,
         player_turn_intent: Optional[TurnIntent] = None,
+        player_turn_resolution: Optional[TurnResolution] = None,
     ) -> Dict[str, Any]:
         """统一后置NPC流程：玩家行动后处理NPC响应。"""
         if not hasattr(self.state_agent, "evolve_npc_action"):
@@ -2567,6 +2873,7 @@ class GameEngine:
             dm_output=dm_output,
             candidate_npc_ids=candidate_ids,
             player_resolution_anchor=player_resolution_anchor,
+            player_turn_resolution=player_turn_resolution,
         )
         if not plans:
             return {"game_over": False, "fragments": []}

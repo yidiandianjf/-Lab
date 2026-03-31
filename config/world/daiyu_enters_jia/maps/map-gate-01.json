@@ -1,0 +1,26 @@
+{
+  "id": "map-gate-01",
+  "name": "荣国府大门",
+  "parent_id": null,
+  "description": {
+    "public": [
+      {
+        "description": "门前石狮对峙，兽头大门森严赫奕，朱漆铜钉在日光下泛着冷亮的光。人来人往却秩序井然，只这一处排场，便足见贾府门第煊赫。"
+      }
+    ],
+    "hint": "开场场景。这里应突出黛玉初入豪门时的谨慎与压迫感，也要给出明确行动方向：从西角门入内，不走正门，体现她知礼。"
+  },
+  "neighbors": [
+    {
+      "id": "map-entrance-01",
+      "direction": "西角门",
+      "description": "由侧门入府，再往内院去"
+    }
+  ],
+  "entities": {
+    "characters": [
+      "char-servant-01"
+    ],
+    "items": []
+  }
+}

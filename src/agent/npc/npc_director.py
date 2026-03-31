@@ -104,6 +104,9 @@ class NPCDirector:
         trigger_source: str = "unified",
         recent_events: Optional[List[dict]] = None,
         narrative_context: str = "",
+        player_turn_resolution: Optional[Dict[str, Any]] = None,
+        turn_trace_so_far: Optional[Dict[str, Any]] = None,
+        narrative_memory: Optional[Dict[str, Any]] = None,
     ) -> NPCActionDecision:
         available_npc_ids = self._filter_actionable_npcs(npc_ids, game_state)
         if not available_npc_ids:
@@ -117,6 +120,9 @@ class NPCDirector:
                 trigger_source,
                 recent_events or [],
                 narrative_context,
+                player_turn_resolution,
+                turn_trace_so_far,
+                narrative_memory,
             )
             if llm_result is not None and llm_result.actions:
                 return llm_result
@@ -137,8 +143,21 @@ class NPCDirector:
         trigger_source: str,
         recent_events: List[dict],
         narrative_context: str,
+        player_turn_resolution: Optional[Dict[str, Any]],
+        turn_trace_so_far: Optional[Dict[str, Any]],
+        narrative_memory: Optional[Dict[str, Any]],
     ) -> Optional[NPCActionDecision]:
-        request = self._build_request(npc_ids, game_state, player_intent, trigger_source, recent_events, narrative_context)
+        request = self._build_request(
+            npc_ids,
+            game_state,
+            player_intent,
+            trigger_source,
+            recent_events,
+            narrative_context,
+            player_turn_resolution,
+            turn_trace_so_far,
+            narrative_memory,
+        )
         prompt = self._build_prompt(request)
         try:
             response = self._call_llm_json_compatible(
@@ -188,28 +207,66 @@ class NPCDirector:
         trigger_source: str,
         recent_events: List[dict],
         narrative_context: str,
+        player_turn_resolution: Optional[Dict[str, Any]],
+        turn_trace_so_far: Optional[Dict[str, Any]],
+        narrative_memory: Optional[Dict[str, Any]],
     ) -> LLMRequestEnvelopeV2:
+        current_map = game_state.get_current_map()
+        nearby_non_activated_npcs: List[Dict[str, Any]] = []
+        nearby_items: List[Dict[str, Any]] = []
+        if current_map:
+            for char_id in list(current_map.entities.characters or []):
+                if char_id in npc_ids or char_id == game_state.player_id:
+                    continue
+                char = game_state.characters.get(char_id)
+                if not char:
+                    continue
+                nearby_non_activated_npcs.append(
+                    {
+                        "id": char.id,
+                        "name": char.name,
+                        "location": char.location,
+                        "description_public": char.description.get_public_text() if char.description else "",
+                        "description_hint": char.description.hint if char.description else "",
+                    }
+                )
+
+            for item_id in list(current_map.entities.items or []):
+                item = game_state.items.get(item_id)
+                if not item:
+                    continue
+                nearby_items.append(
+                    {
+                        "id": item.id,
+                        "name": item.name,
+                        "location": item.location,
+                        "is_portable": item.is_portable,
+                        "description_public": item.description.get_public_text() if item.description else "",
+                        "description_hint": item.description.hint if item.description else "",
+                    }
+                )
+
         payload = {
             "trigger_source": trigger_source,
             "activated_npc_ids": npc_ids,
             "surrounding_context": {
                 "current_map": (
                     {
-                        "id": game_state.get_current_map().id,
-                        "name": game_state.get_current_map().name,
-                        "description": game_state.get_current_map().description.get_public_text(),
+                        "id": current_map.id,
+                        "name": current_map.name,
+                        "description": current_map.description.get_public_text(),
                     }
-                    if game_state.get_current_map()
+                    if current_map
                     else None
                 ),
-                "nearby_non_activated_npcs": [],
-                "nearby_items": [],
+                "nearby_non_activated_npcs": nearby_non_activated_npcs,
+                "nearby_items": nearby_items,
                 # 注意：hazards字段已移除，不在NPCDirector中使用
             },
             "player_action_summary": player_intent.action_description if player_intent else "",
-            "player_turn_resolution": None,
-            "turn_trace_so_far": {"turn_id": game_state.turn_count, "steps": []},
-            "narrative_memory": {"summary_lines": [], "key_facts": [], "stable_facts": []},
+            "player_turn_resolution": player_turn_resolution,
+            "turn_trace_so_far": turn_trace_so_far or {"turn_id": game_state.turn_count, "steps": []},
+            "narrative_memory": narrative_memory or {"summary_lines": [], "key_facts": [], "stable_facts": []},
             "npc_world_views": [self._serialize_npc_state(game_state, npc_id) for npc_id in npc_ids],
         }
         return LLMRequestEnvelopeV2(

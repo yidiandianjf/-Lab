@@ -9,9 +9,9 @@ LLM服务模块 - 封装OpenAI兼容API调用
 - 完整的错误处理和降级策略
 
 环境变量配置：
-- LLM_API_KEY: API密钥
-- LLM_BASE_URL: 服务基础URL（可选，默认为OpenAI官方）
-- LLM_MODEL: 模型名称（默认为gpt-3.5-turbo）
+- LLM_API_KEY: sk-c8ce7db131914189b362c6a07b4225e8
+- LLM_BASE_URL: https://dashscope.aliyuncs.com/compatible-mode/v1
+- LLM_MODEL: qwen3.5-122b-a10b
 """
 
 import os
@@ -86,6 +86,31 @@ class LLMConfig:
     timeout: float = 60.0
     enable_thinking: bool = True  # 是否启用思考模式
     structured_output: bool = False  # 是否启用结构化输出
+
+    @staticmethod
+    def _resolve_config_path(config_path: str) -> Optional[Path]:
+        """Resolve config path from cwd first, then project root."""
+        raw_path = Path(config_path).expanduser()
+        candidates: List[Path] = []
+
+        if raw_path.is_absolute():
+            candidates.append(raw_path)
+        else:
+            candidates.append(Path.cwd() / raw_path)
+            project_root = Path(__file__).resolve().parents[2]
+            candidates.append(project_root / raw_path)
+
+        seen = set()
+        for candidate in candidates:
+            normalized = candidate.resolve(strict=False)
+            normalized_key = str(normalized).lower()
+            if normalized_key in seen:
+                continue
+            seen.add(normalized_key)
+            if normalized.exists():
+                return normalized
+
+        return None
     
     @classmethod
     def from_sources(cls, config_path: str = "config/llm.json") -> "LLMConfig":
@@ -97,9 +122,9 @@ class LLMConfig:
         3. 默认值
         """
         file_data: Dict[str, Any] = {}
-        path = Path(config_path)
-        if path.exists():
-            with open(path, "r", encoding="utf-8") as f:
+        path = cls._resolve_config_path(config_path)
+        if path and path.exists():
+            with open(path, "r", encoding="utf-8-sig") as f:
                 file_data = json.load(f)
 
         api_key = os.getenv("LLM_API_KEY") or file_data.get("api_key")

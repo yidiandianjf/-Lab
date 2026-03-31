@@ -25,6 +25,7 @@ class WorldBundle:
     game_state: GameState
     world_name: str
     end_condition: str
+    entry_scene_narrative: str = ""
     npc_response_mode: str = "unified"
     narrative_window: int = 5
     npc_director_use_llm: bool = True
@@ -48,7 +49,12 @@ class WorldLoader:
             config_dir: 配置文件目录路径，默认为"config/world"
         """
         self.io = io_system
-        self.config_dir = Path(config_dir)
+        raw_config_dir = Path(config_dir).expanduser()
+        if raw_config_dir.is_absolute():
+            self.config_dir = raw_config_dir
+        else:
+            project_root = Path(__file__).resolve().parents[3]
+            self.config_dir = project_root / raw_config_dir
         self.world_name = "default"
         self.world_dir = self.config_dir
         self.manifest: Dict[str, Any] = {}
@@ -93,6 +99,7 @@ class WorldLoader:
             game_state=game_state,
             world_name=self.world_name,
             end_condition=self.manifest.get("end_condition", "玩家死亡或达成剧情结局"),
+            entry_scene_narrative=self._resolve_entry_scene_narrative(),
             npc_response_mode=self._resolve_npc_response_mode(),
             narrative_window=self._resolve_narrative_window(),
             npc_director_use_llm=self._resolve_bool_field("npc_director_use_llm", True),
@@ -402,6 +409,10 @@ class WorldLoader:
             return 5
 
         return max(1, value)
+
+    def _resolve_entry_scene_narrative(self) -> str:
+        raw_value = self.manifest.get("entry_scene_narrative", "")
+        return str(raw_value or "").strip()
 
     def _resolve_bool_field(self, field_name: str, default: bool) -> bool:
         raw_value = self.manifest.get(field_name, default)

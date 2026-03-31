@@ -1,5 +1,5 @@
 """
-COC文字冒险游戏 - 主入口文件
+AI阅读实验室 - 主入口文件
 
 功能：
 - 解析命令行参数
@@ -8,7 +8,7 @@ COC文字冒险游戏 - 主入口文件
 
 使用方法:
     python src/main.py                    # 开始新游戏
-    python src/main.py --name "调查员"     # 指定玩家名称
+    python src/main.py --name "林黛玉"     # 指定玩家名称
     python src/main.py --load save1       # 加载存档
     python src/main.py --help             # 显示帮助信息
 """
@@ -20,7 +20,8 @@ import logging
 from pathlib import Path
 
 # 添加项目根目录到Python路径
-sys.path.insert(0, str(Path(__file__).parent.parent))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.io_system import IOSystem
 from src.data.init.world_loader import load_initial_world_bundle
@@ -38,6 +39,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+DEFAULT_WORLD = "daiyu_enters_jia"
+APP_TITLE = "AI阅读实验室"
+APP_SUBTITLE = "《红楼梦·黛玉初进贾府》沉浸式教育场景"
+
+
+def ensure_project_root_cwd():
+    """Normalize cwd to project root so relative config/data paths stay stable."""
+    try:
+        current = Path.cwd().resolve()
+    except Exception:
+        current = Path.cwd()
+
+    if current != PROJECT_ROOT:
+        os.chdir(PROJECT_ROOT)
+        logger.info(f"工作目录已切换到项目根目录: {PROJECT_ROOT}")
+
 
 def parse_arguments():
     """
@@ -47,12 +64,12 @@ def parse_arguments():
         argparse.Namespace: 解析后的参数对象
     """
     parser = argparse.ArgumentParser(
-        description="COC文字冒险游戏 - 基于LLM的克苏鲁的呼唤TRPG风格游戏",
+        description=f"{APP_TITLE} - {APP_SUBTITLE}",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
   python src/main.py                    开始新游戏
-  python src/main.py --name "张三"       以指定名称开始新游戏
+  python src/main.py --name "林黛玉"     以指定名称开始新游戏
   python src/main.py --load auto_save   加载自动存档继续游戏
   python src/main.py --db data/my_game.db  使用指定数据库文件
         """
@@ -96,7 +113,7 @@ def parse_arguments():
     parser.add_argument(
         "--world", "-w",
         type=str,
-        default="mysterious_library",
+        default=DEFAULT_WORLD,
         help="指定世界配置目录名（位于 config/world/<world_name>）"
     )
     
@@ -185,6 +202,8 @@ def _start_new_game(engine: GameEngine, args):
             narrative_window=bundle.narrative_window,
             npc_director_use_llm=bundle.npc_director_use_llm,
             narrative_merge_use_llm=bundle.narrative_merge_use_llm,
+            entry_scene_narrative=bundle.entry_scene_narrative,
+            prime_entry_scene=True,
         )
 
         if args.name:
@@ -206,6 +225,7 @@ def main():
     主函数 - 游戏入口点
     """
     try:
+        ensure_project_root_cwd()
         # 解析命令行参数
         args = parse_arguments()
         
@@ -213,8 +233,8 @@ def main():
         setup_logging(args.debug)
         
         logger.info("=" * 60)
-        logger.info("COC文字冒险游戏")
-        logger.info("基于LLM的克苏鲁的呼唤TRPG风格游戏")
+        logger.info(APP_TITLE)
+        logger.info(APP_SUBTITLE)
         logger.info("=" * 60)
         
         # 初始化游戏
