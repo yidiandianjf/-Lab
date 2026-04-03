@@ -1,0 +1,11 @@
+# LLM client
+openai>=1.0.0
+
+# Data validation
+pydantic>=2.0.0
+
+# Persistence
+sqlalchemy>=2.0.0
+
+# YAML config support
+PyYAML>=6.0.0

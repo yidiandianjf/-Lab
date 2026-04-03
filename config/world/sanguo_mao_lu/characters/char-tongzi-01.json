@@ -1,0 +1,36 @@
+{
+  "id": "char-tongzi-01",
+  "name": "书童",
+  "basic_info": "诸葛亮身边的童子，负责照料先生日常起居，接待来访客人。年约十二三岁，机灵懂事。",
+  "description": {
+    "public": [
+      {
+        "description": "一个年约十二三岁的童子，穿着朴素的布衣，眉清目秀，举止有礼。"
+      }
+    ],
+    "hint": "功能性NPC，负责：1)通报来访者；2)传达先生的回复；3)引导客人等候；4)考验来访者的诚意。语言简单恭敬，如'先生正在午睡''先生说了，请将军稍候'。对傲慢的来访者会表现出为难，对谦逊的来访者会尽力帮忙通报。\n\n【关键事实生成】成功通报后，确保在narrative_memory.key_facts中添加'已通报书童'。"
+  },
+  "location": "map-cottage-outer-01",
+  "inventory": [],
+  "status": {
+    "hp": 8,
+    "max_hp": 8,
+    "san": 60,
+    "lucky": 45
+  },
+  "attributes": {
+    "str": 6,
+    "con": 8,
+    "siz": 6,
+    "dex": 12,
+    "app": 12,
+    "int": 12,
+    "pow": 10,
+    "edu": 8
+  },
+  "memory": {
+    "current_event": "",
+    "log": []
+  },
+  "is_player": false
+}

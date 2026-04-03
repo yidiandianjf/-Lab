@@ -1,0 +1,26 @@
+{
+  "id": "map-room-corridor-01",
+  "name": "走廊",
+  "parent_id": "map-area-library",
+  "description": {
+    "public": [
+      {
+        "description": "一条狭长的走廊，两侧挂着泛黄的肖像画。尽头是一扇窗户，月光透过窗帘洒进来，在地板上投下斑驿的影子。"
+      }
+    ],
+    "hint": "尽头窗下的地板有一块是松动的，下面藏着一张古老的纸条。"
+  },
+  "neighbors": [
+    {
+      "id": "map-room-library-01",
+      "direction": "南",
+      "description": "通往图书馆主厅的木门"
+    }
+  ],
+  "entities": {
+    "characters": [
+      "char-guard-01"
+    ],
+    "items": []
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "api_key": "sk-xxxxxxxxxxxxxxxx",
+  "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "model": "qwen3.5-flash",
+  "temperature": 1.2,
+  "max_tokens": 2048,
+  "timeout": 30.0,
+  "enable_thinking": false,
+  "structured_output": true
+}

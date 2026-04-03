@@ -1,0 +1,36 @@
+{
+  "id": "char-player-01",
+  "name": "调查员",
+  "basic_info": "一位被叫来调查图书馆异常事件的年轻人。",
+  "description": {
+    "public": [
+      {
+        "description": "一个穿着灰色风衣的年轻人，目光敏锐，经常下意识打量周围细节。"
+      }
+    ],
+    "hint": "玩家控制的角色。对超自然现象敏感，善于观察、推理与临场应变。"
+  },
+  "location": "map-room-library-01",
+  "inventory": [],
+  "status": {
+    "hp": 20,
+    "max_hp": 20,
+    "san": 60,
+    "lucky": 50
+  },
+  "attributes": {
+    "str": 20,
+    "con": 20,
+    "siz": 20,
+    "dex": 20,
+    "app": 20,
+    "int": 20,
+    "pow": 20,
+    "edu": 20
+  },
+  "memory": {
+    "current_event": "",
+    "log": []
+  },
+  "is_player": true
+}

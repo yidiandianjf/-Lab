@@ -1,0 +1,14 @@
+{
+  "id": "item-ledger-01",
+  "name": "档案账册",
+  "description": {
+    "public": [
+      {
+        "description": "一本厚重的账册，封皮上写着图书馆内部档案目录。许多页面被反复翻阅，某几页还被人故意撕去。"
+      }
+    ],
+    "hint": "账册里记录着地下事件的时间线。若玩家带着旧书和纸条来到档案室，它会补全真相。"
+  },
+  "location": "map-room-archive-01",
+  "is_portable": true
+}

@@ -1,0 +1,7 @@
+{
+  "id": "ending-truth-revealed",
+  "priority": 200,
+  "condition_expr": "all(player_at:map-room-archive-01,has_item:item-book-01,has_item:item-note-01)",
+  "is_bad_ending": false,
+  "end_narrative": "你在地下档案室里拼出了全部真相。被封存的名字、被篡改的目录、被故意隐藏的失踪者，终于随着这份账册一起重见天日。你走出图书馆时，晖晨已经落在台阶上。"
+}

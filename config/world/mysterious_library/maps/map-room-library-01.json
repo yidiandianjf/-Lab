@@ -1,0 +1,30 @@
+{
+  "id": "map-room-library-01",
+  "name": "图书馆主厅",
+  "parent_id": "map-area-library",
+  "description": {
+    "public": [
+      {
+        "description": "一间宽敞而古老的大厅，四周摆满高耗的书架，书脉上覆盖着厚厚灰尘。中央是一张巨大的橘木阅读桌，桌上点着一盆梅油灯。"
+      }
+    ],
+    "hint": "东侧书架后有一扇暗门，通向地下密室。阅读桌上有一张可疑的纸条。"
+  },
+  "neighbors": [
+    {
+      "id": "map-room-corridor-01",
+      "direction": "北",
+      "description": "通往走廊的木门"
+    }
+  ],
+  "entities": {
+    "characters": [
+      "char-archivist-01"
+    ],
+    "items": [
+      "item-book-01",
+      "item-lantern-01",
+      "item-note-01"
+    ]
+  }
+}

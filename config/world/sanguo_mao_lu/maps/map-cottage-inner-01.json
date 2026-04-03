@@ -1,0 +1,26 @@
+{
+  "id": "map-cottage-inner-01",
+  "name": "茅庐内室",
+  "parent_id": null,
+  "description": {
+    "public": [
+      {
+        "description": "茅庐内室简朴雅致，墙上挂着一幅山水画，案上摆着几卷竹简和一张古琴。窗边有一张卧榻，榻旁放着几本书籍。室内弥漫着淡淡的檀香，充满书卷气息。"
+      }
+    ],
+    "hint": "核心对话场景。诸葛亮在此与刘备进行隆中对。教育要点：1)展现诸葛亮的战略眼光；2)讨论天下大势；3)刘备表达志向；4)诸葛亮决定出山相助。对话应体现'君臣相遇'的历史意义。"
+  },
+  "neighbors": [
+    {
+      "id": "map-cottage-outer-01",
+      "direction": "外",
+      "description": "退出茅庐"
+    }
+  ],
+  "entities": {
+    "characters": [
+      "char-zhuge-01"
+    ],
+    "items": []
+  }
+}

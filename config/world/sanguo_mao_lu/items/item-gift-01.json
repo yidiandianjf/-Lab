@@ -1,0 +1,14 @@
+{
+  "id": "item-gift-01",
+  "name": "拜帖礼物",
+  "description": {
+    "public": [
+      {
+        "description": "一份精心准备的礼物，包含金银锦帛，是刘备为拜访诸葛亮准备的见面礼。"
+      }
+    ],
+    "hint": "拜访礼物，体现刘备的诚意。在适当的时机献上可增加好感度。但诸葛亮更看重来访者的诚意和志向，而非物质礼物。"
+  },
+  "location": "char-liubei-01",
+  "is_portable": true
+}

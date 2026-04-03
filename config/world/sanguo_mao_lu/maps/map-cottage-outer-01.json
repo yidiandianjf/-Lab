@@ -1,0 +1,26 @@
+{
+  "id": "map-cottage-outer-01",
+  "name": "茅庐外",
+  "parent_id": null,
+  "description": {
+    "public": [
+      {
+        "description": "隆中山中，一座简朴的茅庐掩映在苍松翠竹之间。门前有一条小径，两旁种着几株梅树。远处青山如黛，近处溪水潺潺。茅庐柴门半掩，隐约可见院中有一小童在洒扫。"
+      }
+    ],
+    "hint": "核心考验场景。玩家需要：1)向书童表明来意；2)耐心等候诸葛亮醒来；3)展现谦逊诚意。考验要点：不可强行闯入、不可傲慢催促、需要表现出对人才的尊重。书童会根据玩家态度决定是否通报。"
+  },
+  "neighbors": [
+    {
+      "id": "map-cottage-inner-01",
+      "direction": "内",
+      "description": "茅庐内室，需经书童通报后方可进入"
+    }
+  ],
+  "entities": {
+    "characters": [
+      "char-tongzi-01"
+    ],
+    "items": []
+  }
+}

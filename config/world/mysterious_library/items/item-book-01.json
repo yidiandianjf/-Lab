@@ -1,0 +1,14 @@
+{
+  "id": "item-book-01",
+  "name": "破旧的书",
+  "description": {
+    "public": [
+      {
+        "description": "一本皮面装订的旧书，书页已经涎黄，封面上依稀可见《阿卡姆秘史》的字样。"
+      }
+    ],
+    "hint": "书中记载了图书馆地下密室的传说，也提到档案室里保存着与失踪事件有关的目录。阅读需要进行理智检定。"
+  },
+  "location": "map-room-library-01",
+  "is_portable": true
+}

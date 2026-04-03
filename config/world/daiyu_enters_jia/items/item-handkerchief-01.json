@@ -1,0 +1,14 @@
+{
+  "id": "item-handkerchief-01",
+  "name": "素白手帕",
+  "description": {
+    "public": [
+      {
+        "description": "一方素净的白绫手帕，边角已有些细微磨痕，像是被人反复摩挲过许多次。"
+      }
+    ],
+    "hint": "黛玉随身携带的情感寄托物，可用于拭泪、压惊，也可自然引出她对母亲的思念。"
+  },
+  "location": "char-daiyu-01",
+  "is_portable": true
+}

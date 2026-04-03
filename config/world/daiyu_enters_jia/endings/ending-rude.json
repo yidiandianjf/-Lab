@@ -1,0 +1,7 @@
+{
+  "id": "ending-rude",
+  "priority": 40,
+  "condition_expr": "all(player_at:map-gate-01,turn_count_ge:4)",
+  "is_bad_ending": true,
+  "end_narrative": "【学习反思】你久立府门之前，迟疑失措，未能顺着引导进入贾府核心场景，也就错过了理解人物关系与礼仪秩序的关键时刻。重来一次时，不妨留意黛玉为何不走正门、为何处处收敛，这正是文本教育意义的一部分。"
+}

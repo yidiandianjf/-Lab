@@ -1,0 +1,26 @@
+{
+  "id": "map-room-archive-01",
+  "name": "地下档案室",
+  "parent_id": "map-area-library",
+  "description": {
+    "public": [
+      {
+        "description": "一间比密室更深的地下档案室，长排铁柜整齐排列，柜门上贴着退色的标签。地面上散落着被翻动过的档案袋，空气里带着潮湿纸张和陈旧墨水的味道。"
+      }
+    ],
+    "hint": "这里保存着图书馆真正的秘密。若玩家带着旧书和纸条来到这里，馆藏管理员会愿意说出真相。"
+  },
+  "neighbors": [
+    {
+      "id": "map-room-secret-01",
+      "direction": "上",
+      "description": "返回地下密室的铁门"
+    }
+  ],
+  "entities": {
+    "characters": [],
+    "items": [
+      "item-ledger-01"
+    ]
+  }
+}

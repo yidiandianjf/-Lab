@@ -1,0 +1,17 @@
+{
+  "world_id": "world-sanguo-mao-lu",
+  "world_name": "sanguo_mao_lu",
+  "player_id": "char-liubei-01",
+  "start_map_id": "map-cottage-outer-01",
+  "turn_order": [
+    "char-liubei-01",
+    "char-tongzi-01",
+    "char-zhuge-01"
+  ],
+  "narrative_window": 6,
+  "npc_response_mode": "unified",
+  "npc_director_use_llm": true,
+  "narrative_merge_use_llm": true,
+  "end_condition": "完成与诸葛亮的会面，展现诚意与谦逊，获得隆中对的战略指导。玩家需要在茅庐外等候，通过恰当的礼仪和诚意打动诸葛亮，最终进入茅庐内完成对话。",
+  "entry_scene_narrative": "建安十二年冬，新野城外。你带着关羽、张飞二弟，第三次来到隆中。前两次拜访皆未能见到先生，这次你决心无论如何也要等到诸葛亮出来。远远望去，茅庐掩映在松竹之间，炊烟袅袅，一派清幽景象。你翻身下马，整理衣冠，准备再次拜访。"
+}

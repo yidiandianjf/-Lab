@@ -1,0 +1,14 @@
+{
+  "id": "item-key-01",
+  "name": "铜钥匙",
+  "description": {
+    "public": [
+      {
+        "description": "一把古老的铜制钥匙，表面布满了岁月的痕迹，柄部刻有一个奇怪的符号。"
+      }
+    ],
+    "hint": "这把钥匙可以打开图书馆里某些上了锁的柜门，也许还能解开走廊尽头松动木板下的机械。"
+  },
+  "location": "char-guard-01",
+  "is_portable": true
+}

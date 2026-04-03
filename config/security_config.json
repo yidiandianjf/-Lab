@@ -1,0 +1,38 @@
+{
+  "enabled": true,
+  "keyword_filter": {
+    "enabled": true,
+    "config_path": "config/sensitive_words.json"
+  },
+  "ai_filter": {
+    "enabled": true,
+    "type": "api",
+    "config_path": "config/security_llm.json",
+    "timeout_ms": 500,
+    "threshold": {
+      "block_level": 2,
+      "warn_level": 1
+    }
+  },
+  "command_bypass": {
+    "enabled": true,
+    "commands": [
+      "help",
+      "save",
+      "load",
+      "exit",
+      "reset",
+      "debug"
+    ]
+  },
+  "fail_policy": {
+    "on_layer1_error": "allow",
+    "on_layer2_error": "allow"
+  },
+  "logging": {
+    "enabled": true,
+    "log_blocked": true,
+    "log_passed": false,
+    "log_file": "logs/security.log"
+  }
+}

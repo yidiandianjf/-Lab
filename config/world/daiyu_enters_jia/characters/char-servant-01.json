@@ -1,0 +1,36 @@
+{
+  "id": "char-servant-01",
+  "name": "婆子丫鬟们",
+  "basic_info": "贾府的婆子与丫鬟，负责迎候、传话、引路、服侍，是府中礼仪秩序最直接的体现者。",
+  "description": {
+    "public": [
+      {
+        "description": "几名衣着整齐的婆子和丫鬟候在门边，言行规矩，神色恭谨，只一抬手一低眉都透出大家族训练有素的气派。"
+      }
+    ],
+    "hint": "辅助NPC。主要职责是引导黛玉从大门进入内院，提醒礼节，烘托贾府排场。语言应简洁恭敬，如'林姑娘请随我们从角门进去''老太太已在里面等着'。不必喧宾夺主，但应为玩家提供明确方向感。"
+  },
+  "location": "map-gate-01",
+  "inventory": [],
+  "status": {
+    "hp": 10,
+    "max_hp": 10,
+    "san": 60,
+    "lucky": 45
+  },
+  "attributes": {
+    "str": 10,
+    "con": 10,
+    "siz": 10,
+    "dex": 11,
+    "app": 10,
+    "int": 10,
+    "pow": 10,
+    "edu": 8
+  },
+  "memory": {
+    "current_event": "",
+    "log": []
+  },
+  "is_player": false
+}
