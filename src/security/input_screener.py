@@ -65,10 +65,13 @@ class InputScreener:
         fail_cfg = self.config.get("fail_policy", {}) or {}
 
         self.keyword_enabled = bool(keyword_cfg.get("enabled", True))
-        self.ai_enabled = bool(ai_cfg.get("enabled", False))
+        self._ai_cfg = dict(ai_cfg)
+        self.ai_config_enabled = bool(ai_cfg.get("enabled", False))
+        self.ai_enabled = self.ai_config_enabled
         self.block_level = int((ai_cfg.get("threshold", {}) or {}).get("block_level", 3))
         self.warn_level = int((ai_cfg.get("threshold", {}) or {}).get("warn_level", 2))
         self.ai_timeout_ms = int(ai_cfg.get("timeout_ms", 500))
+        self.ai_max_retries = int(ai_cfg.get("max_retries", 1))
 
         self.on_layer1_error = str(fail_cfg.get("on_layer1_error", "allow")).lower()
         self.on_layer2_error = str(fail_cfg.get("on_layer2_error", "allow")).lower()
@@ -95,6 +98,23 @@ class InputScreener:
         if not self.bypass_enabled or not command:
             return False
         return str(command).strip().lower() in self.bypass_commands
+
+
+    def set_ai_enabled(self, enabled: bool) -> bool:
+        desired = bool(enabled)
+        if desired and self.ai_filter is None and self.ai_config_enabled:
+            self.ai_filter = self._build_ai_filter(self._ai_cfg)
+        self.ai_enabled = desired and self.ai_filter is not None
+        return self.ai_enabled
+
+    def ai_status(self) -> Dict[str, Any]:
+        return {
+            "enabled": bool(self.ai_enabled and self.ai_filter is not None),
+            "configured": bool(self.ai_config_enabled),
+            "available": bool(self.ai_filter is not None),
+            "timeout_ms": self.ai_timeout_ms,
+            "max_retries": self.ai_max_retries,
+        }
 
     @staticmethod
     def _normalized_text_variants(text: str) -> Tuple[str, str]:
@@ -127,7 +147,7 @@ class InputScreener:
             return True
 
         command_patterns = (
-            r"\\[a-z]+",
+            "\\[a-z]+",
             r"[a-z]:\\",
             r"/(?:etc|usr|var|tmp)/",
             r"\b(?:rm|del|copy|move|type|cat|dir|ls|chmod|curl|wget|pip|conda|git)\b",
@@ -154,6 +174,20 @@ class InputScreener:
         )
         return bool(cls._find_markers(text, violence_markers))
 
+
+    @staticmethod
+    def _looks_like_direct_assault_text(text: str) -> bool:
+        normalized = str(text or "").strip().lower()
+        if not normalized:
+            return False
+        assault_patterns = (
+            r"(?:打|揍|殴打|暴打|毒打)(?:了|过)?(?:他|她|人|童子|书童|小童|孔明|诸葛亮)?(?:一拳|一下|一顿|几下)?",
+            r"(?:给|朝|冲着)(?:他|她|人|童子|书童|小童|孔明|诸葛亮)(?:打|揍|踢|踹)(?:一拳|一脚|一顿|几下)?",
+            r"(?:踢|踹)(?:了|过)?(?:他|她|人|童子|书童|小童|孔明|诸葛亮)?(?:一脚|一下)?",
+            r"(?:扇|抽)(?:了|过)?(?:他|她|人|童子|书童|小童|孔明|诸葛亮)(?:耳光|巴掌)?",
+        )
+        return any(re.search(pattern, normalized, re.IGNORECASE) for pattern in assault_patterns)
+
     @classmethod
     def _looks_like_self_harm_text(cls, text: str) -> bool:
         self_harm_markers = (
@@ -170,7 +204,33 @@ class InputScreener:
         return bool(cls._find_markers(text, sensitive_markers))
 
     @classmethod
+    def _looks_like_explicit_system_probe_text(cls, text: str) -> bool:
+        probe_markers = (
+            "系统提示词", "system prompt", "developer message", "api key", "token",
+            "密钥", "源码", "配置文件", "数据库", "内部提示",
+        )
+        return bool(cls._find_markers(text, probe_markers))
+
+    @classmethod
     def _match_local_hard_block(cls, text: str) -> Optional[ScreenResult]:
+        if cls._looks_like_explicit_system_probe_text(text):
+            return ScreenResult(
+                is_blocked=True,
+                layer=0,
+                reason="local hard block (system_operation): explicit system probe",
+                user_message="Input blocked.",
+                detail={"category": "system_operation", "matched_words": ["system_probe"]},
+            )
+
+        if cls._looks_like_direct_assault_text(text):
+            return ScreenResult(
+                is_blocked=True,
+                layer=0,
+                reason="local hard block (violence): direct assault intent",
+                user_message="Input blocked.",
+                detail={"category": "violence", "matched_words": ["direct_assault"]},
+            )
+
         local_rules: List[Tuple[str, Tuple[str, ...]]] = [
             (
                 "abuse",
@@ -309,6 +369,48 @@ class InputScreener:
             return self._should_warn_natural_language(text, ai_categories)
         return True
 
+    @classmethod
+    def _looks_like_ai_borderline_text(cls, text: str) -> bool:
+        """Detect gray-area inputs worth sending to the AI fallback layer."""
+        normalized = str(text or "").strip().lower()
+        if not normalized:
+            return False
+
+        if cls._looks_like_system_operation_text(text):
+            return True
+
+        soft_patterns = (
+            "(\u6df7\u8d26|\u8be5\u6b7b|\u6eda\u5f00|\u738b\u516b\u86cb|\u757c\u751f|\u8d31\u4eba|\u5e9f\u7269|\u65e0\u803b)",
+            "(\u7808\u95e8|\u95ef\u8fdb\u53bb|\u786c\u95ef|\u52a8\u624b|\u63cd\u4ed6|\u6253\u4ed6|\u780d\u4ed6|\u5bb0\u4e86|\u5f04\u6b7b)",
+            "(\u8840|\u5c38|\u65ad\u624b|\u65ad\u5934|\u6345\u5200|\u67aa|\u70b8\u836f)",
+            "(\u4e0a\u5e8a|\u4eb2\u5634|\u6478\u80f8|\u8131\u8863|\u88f8\u4f53|\u6027\u9a9a\u6270|\u5f3a\u8feb)",
+            "(\u4e0d\u60f3\u6d3b|\u6d3b\u4e0d\u4e0b\u53bb|\u7ed3\u675f\u751f\u547d|\u8f7b\u751f)",
+            "(\u653f\u5e9c|\u653f\u6743|\u9886\u5bfc\u4eba|\u793a\u5a01|\u6e38\u884c|\u9769\u547d|\u72ec\u7acb|\u5206\u88c2)",
+            r"\b(hack|bypass|inject|override|exploit|payload)\b",
+        )
+        return any(re.search(pattern, normalized, re.IGNORECASE) for pattern in soft_patterns)
+
+    def _should_run_ai_screening(
+        self,
+        text: str,
+        context: Dict[str, Any],
+        layer1_action: Optional[str] = None,
+    ) -> bool:
+        """AI layer should be a real fallback, not a request on every sentence."""
+        if not (self.ai_enabled and self.ai_filter):
+            return False
+        if bool(context.get("bypass_ai", False)):
+            return False
+
+        channel = str((context or {}).get("channel", "") or "").strip().lower()
+        if channel != "natural_language":
+            return True
+
+        if (layer1_action or "").lower() == "warn":
+            return True
+
+        return self._looks_like_ai_borderline_text(text)
+
     def screen(self, text: str, context: Optional[dict] = None) -> ScreenResult:
         context = context or {}
         if not self.enabled:
@@ -320,6 +422,7 @@ class InputScreener:
         if local_block is not None:
             return local_block
 
+        layer1_action: Optional[str] = None
         if self.keyword_enabled:
             try:
                 layer1 = self.keyword_filter.check(text)
@@ -330,6 +433,7 @@ class InputScreener:
                 layer1 = None
 
             if layer1:
+                layer1_action = str(layer1.action or "").lower()
                 if layer1.is_blocked:
                     return ScreenResult(
                         True,
@@ -346,14 +450,14 @@ class InputScreener:
                 if layer1.action == "warn":
                     logger.info("Keyword screening warning: %s", layer1.matched_words)
 
-        bypass_ai = bool(context.get("bypass_ai", False))
-        if self.ai_enabled and self.ai_filter and not bypass_ai:
+        if self._should_run_ai_screening(text, context, layer1_action=layer1_action):
             try:
                 if self.ai_filter.is_available():
                     ai_result = self.ai_filter.screen(
                         text,
                         context=context,
                         timeout=self.ai_timeout_ms / 1000.0,
+                        max_retries=self.ai_max_retries,
                     )
                     ai_categories = {
                         str(one).strip().lower()
@@ -385,14 +489,14 @@ class InputScreener:
                             ai_result.reason,
                         )
             except Exception as exc:
-                logger.exception("AI screening error: %s", exc)
+                logger.warning("AI screening error: %s", exc)
                 if self.on_layer2_error == "block":
                     return ScreenResult(True, 2, f"ai screening error: {exc}", "Input blocked.", {"error": str(exc)})
 
         return ScreenResult(False, 0, "passed", "", None)
 
     def _build_ai_filter(self, ai_cfg: Dict[str, Any]) -> Optional[AIScreenFilter]:
-        if not self.ai_enabled:
+        if not self.ai_config_enabled:
             return None
         provider = str(ai_cfg.get("type", "api") or "api").strip().lower()
         if provider != "api":

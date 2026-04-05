@@ -1,4 +1,4 @@
-﻿"""
+"""
 Game Engine核心模块 - 游戏引擎主类
 
 整合所有模块的主引擎类：
@@ -157,6 +157,7 @@ class GameEngine:
         self.world_name = "default"
         self.end_condition = "玩家死亡或达成剧情结局"
         self._ending_rules: List[Dict[str, Any]] = []
+        self._world_runtime_state: Dict[str, Any] = {}
         
         logger.info("游戏引擎初始化完成")
     
@@ -197,8 +198,12 @@ class GameEngine:
             self.narrative_context = self._create_narrative_context(
                 window_size=getattr(self.narrative_context, "window_size", 5) if self.narrative_context else 5
             )
+            self.dm_dialogue_log = []
+            self._current_turn_trace = TurnTrace(turn_id=0)
+            self._recent_turn_trace_digests = []
             self._pending_npc_action_plans = {}
             self._last_narrative_merge_output = None
+            self._world_runtime_state = {}
             
             bundle = load_initial_world_bundle(
                 self.io,
@@ -287,6 +292,8 @@ class GameEngine:
                     "narrative_window": save_data.pop("narrative_window", getattr(self.narrative_context, "window_size", 5) if self.narrative_context else 5),
                     "npc_director_use_llm": save_data.pop("npc_director_use_llm", self._npc_director_use_llm),
                     "narrative_merge_use_llm": save_data.pop("narrative_merge_use_llm", self._narrative_merge_use_llm),
+                    "ai_screening_enabled": save_data.pop("ai_screening_enabled", self.get_ai_screening_status().get("enabled", False)),
+                    "runtime_state": save_data.pop("runtime_state", {}),
                 }
             
             # 恢复游戏状态
@@ -300,6 +307,9 @@ class GameEngine:
                 narrative_merge_use_llm=bool(world_metadata.get("narrative_merge_use_llm", self._narrative_merge_use_llm)),
                 entry_scene_narrative=str(world_metadata.get("entry_scene_narrative", self.entry_scene_narrative) or ""),
             )
+            self.set_ai_screening_enabled(bool(world_metadata.get("ai_screening_enabled", self.get_ai_screening_status().get("enabled", False))))
+            runtime_state = world_metadata.get("runtime_state", {})
+            self._world_runtime_state = dict(runtime_state) if isinstance(runtime_state, dict) else {}
             self._is_game_over = False
             
             logger.info("存档加载成功")
@@ -348,6 +358,8 @@ class GameEngine:
                 "narrative_window": getattr(self.narrative_context, "window_size", 5) if self.narrative_context else 5,
                 "npc_director_use_llm": self._npc_director_use_llm,
                 "narrative_merge_use_llm": self._narrative_merge_use_llm,
+                "ai_screening_enabled": self.get_ai_screening_status().get("enabled", False),
+                "runtime_state": self._world_runtime_state,
             }
             
             with open(save_path, "w", encoding="utf-8") as f:
@@ -364,6 +376,85 @@ class GameEngine:
         """重新开始游戏"""
         target_world = self.world_name if self.world_name else "daiyu_enters_jia"
         self.new_game(target_world)
+
+    def set_ai_screening_enabled(self, enabled: bool) -> bool:
+        """Enable or disable AI screening at runtime."""
+        screener = getattr(self.input_system, "screener", None)
+        if screener and hasattr(screener, "set_ai_enabled"):
+            return bool(screener.set_ai_enabled(enabled))
+        return False
+
+    def get_ai_screening_status(self) -> Dict[str, Any]:
+        """Return runtime AI screening status."""
+        screener = getattr(self.input_system, "screener", None)
+        if screener and hasattr(screener, "ai_status"):
+            return dict(screener.ai_status())
+        return {
+            "enabled": False,
+            "configured": False,
+            "available": False,
+            "timeout_ms": None,
+            "max_retries": None,
+        }
+
+    def get_speed_mode(self) -> str:
+        """Return current response speed mode."""
+        if self._npc_director_use_llm and self._narrative_merge_use_llm:
+            return "quality"
+        if not self._npc_director_use_llm and not self._narrative_merge_use_llm:
+            return "fast"
+        return "custom"
+
+    def set_speed_mode(self, mode: str) -> str:
+        """Switch between quality and fast response modes."""
+        normalized = str(mode or "quality").strip().lower()
+        if normalized not in {"fast", "quality"}:
+            normalized = "quality"
+
+        use_llm = normalized == "quality"
+        self._npc_director_use_llm = use_llm
+        self._narrative_merge_use_llm = use_llm
+        self.npc_director = self._create_npc_director()
+        self.narrative_merger = self._create_narrative_merger()
+        self._speed_mode = normalized
+        return normalized
+
+    def _handle_engine_action(self, action: Dict[str, Any]) -> str:
+        """Handle runtime control actions requested by command layer."""
+        if not action:
+            return ""
+
+        action_type = str(action.get("type", "") or "").strip().lower()
+        if action_type == "ai_screening":
+            desired = str(action.get("action", "status") or "status").strip().lower()
+            if desired == "status":
+                status = self.get_ai_screening_status()
+                enabled_text = "开启" if status.get("enabled") else "关闭"
+                configured_text = "已配置" if status.get("configured") else "未配置"
+                available_text = "可用" if status.get("available") else "不可用"
+                return (
+                    f"AI筛查状态: {enabled_text}"
+                    f"（{configured_text}，{available_text}，超时 {status.get('timeout_ms')}ms，"
+                    f"单次请求 {status.get('max_retries')} 次）"
+                )
+            enabled = self.set_ai_screening_enabled(desired == "on")
+            return "AI筛查已开启" if enabled else "AI筛查已关闭"
+
+        if action_type == "speed_mode":
+            desired_mode = str(action.get("mode", "status") or "status").strip().lower()
+            if desired_mode == "status":
+                mode = self.get_speed_mode()
+                if mode == "fast":
+                    return "当前为快速模式：关闭 NPC Director LLM 和叙事合并 LLM，优先降低等待时间。"
+                if mode == "quality":
+                    return "当前为质量模式：启用 NPC Director LLM 和叙事合并 LLM，优先完整表现。"
+                return "当前为自定义模式：部分 LLM 已关闭，速度和表现处于折中状态。"
+            mode = self.set_speed_mode(desired_mode)
+            if mode == "fast":
+                return "已切换为快速模式：关闭 NPC Director LLM 和叙事合并 LLM，优先降低等待时间。"
+            return "已切换为质量模式：启用 NPC Director LLM 和叙事合并 LLM，优先完整表现。"
+
+        return ""
 
     def apply_world_settings(
         self,
@@ -476,6 +567,9 @@ class GameEngine:
                         save_name = input_result.args[0] if input_result.args else "auto_save"
                         ok = self.load_game(save_name)
                         cmd_result.direct_response = f"加载存档成功: {save_name}" if ok else f"加载存档失败: {save_name}"
+
+                    if cmd_result.engine_action:
+                        cmd_result.direct_response = self._handle_engine_action(cmd_result.engine_action)
                     
                     # 检查退出指令
                     if cmd_result.direct_response == "EXIT_GAME":
@@ -548,6 +642,7 @@ class GameEngine:
                 existing_changes=None,
             )
             sanguo_progression: Dict[str, Any] = {"changes": [], "fragments": [], "key_facts": []}
+            sanguo_dialogue_progression: Dict[str, Any] = {"fragments": [], "key_facts": [], "skip_npc_followup": False}
             pending_dialogue_response = ""
             
             # 纯对话场景优先返回玩家可见回复，但如果 DM 明确要求 NPC 继续响应，
@@ -618,6 +713,9 @@ class GameEngine:
                 natural_input,
                 existing_changes=evolution_result.changes if evolution_result is not None else None,
             )
+            for fact in self._build_sanguo_player_key_facts(natural_input):
+                if fact not in sanguo_progression["key_facts"]:
+                    sanguo_progression["key_facts"].append(fact)
             if (sanguo_progression.get("changes") or sanguo_progression.get("fragments")) and evolution_result is None:
                 evolution_result = StateEvolutionOutput(
                     narrative="",
@@ -726,41 +824,54 @@ class GameEngine:
                     )
                 )
 
-            npc_follow = self._process_unified_npc_response(
-                dm_output=dm_output,
-                player_check=check_output,
-                player_resolution_anchor=player_resolution_anchor,
-                player_turn_intent=turn_intent,
-                player_turn_resolution=player_turn_resolution,
-            )
+            sanguo_dialogue_progression = self._build_sanguo_inner_dialogue_progression(natural_input)
+            if sanguo_dialogue_progression.get("skip_npc_followup"):
+                npc_follow = {"fragments": [], "change_failures": [], "game_over": False, "ending": ""}
+            else:
+                npc_follow = self._process_unified_npc_response(
+                    dm_output=dm_output,
+                    player_check=check_output,
+                    player_resolution_anchor=player_resolution_anchor,
+                    player_turn_intent=turn_intent,
+                    player_turn_resolution=player_turn_resolution,
+                )
             if npc_follow.get("change_failures"):
                 result["success"] = False
-                result["response"] = f"状态变更失败: {npc_follow['change_failures'][0]}"
+                result["response"] = f"??????: {npc_follow['change_failures'][0]}"
                 return result
             fragments.extend(npc_follow.get("fragments", []))
             fragments.extend(sanguo_progression.get("fragments", []))
+            fragments.extend(sanguo_dialogue_progression.get("fragments", []))
 
             merged_narrative = self._merge_turn_narratives(
                 fragments,
                 truth_anchor=player_resolution_anchor,
             )
+            progression_fragments = list(sanguo_progression.get("fragments", [])) + list(sanguo_dialogue_progression.get("fragments", []))
             progression_text = "\n\n".join(
                 str(fragment.get("text", "") or "").strip()
-                for fragment in sanguo_progression.get("fragments", [])
+                for fragment in progression_fragments
                 if str(fragment.get("text", "") or "").strip()
             )
             if progression_text and progression_text not in merged_narrative:
                 merged_narrative = f"{merged_narrative}\n\n{progression_text}".strip() if merged_narrative else progression_text
                 if self._last_narrative_merge_output is not None:
                     self._last_narrative_merge_output.merged_narrative = merged_narrative
-            if sanguo_progression.get("key_facts") and self._last_narrative_merge_output is not None:
+            all_progression_facts = list(sanguo_progression.get("key_facts", [])) + list(sanguo_dialogue_progression.get("key_facts", []))
+            if all_progression_facts and self._last_narrative_merge_output is not None:
                 merged_facts = list(getattr(self._last_narrative_merge_output, "new_key_facts", []) or [])
-                for fact in sanguo_progression.get("key_facts", []):
+                for fact in all_progression_facts:
                     normalized = str(fact or "").strip()
                     if normalized and normalized not in merged_facts:
                         merged_facts.append(normalized)
                 self._last_narrative_merge_output.new_key_facts = merged_facts
             self._commit_narrative_merge_output()
+
+            discourtesy_warning = self._apply_sanguo_discourtesy_rule(natural_input)
+            if discourtesy_warning:
+                merged_narrative = f"{merged_narrative}\n\n{discourtesy_warning}" if merged_narrative else discourtesy_warning
+                if self._last_narrative_merge_output is not None:
+                    self._last_narrative_merge_output.merged_narrative = merged_narrative
 
             result["narrative"] = merged_narrative
             if not merged_narrative and pending_dialogue_response and not result.get("response"):
@@ -2146,6 +2257,131 @@ class GameEngine:
         narrative_memory = self._narrative_memory_builder.build(self._dump_narrative_context())
         return {str(one).strip() for one in narrative_memory.key_facts if str(one).strip()}
 
+
+    def _get_runtime_state_value(self, key: str, default: Any = None) -> Any:
+        return self._world_runtime_state.get(key, default)
+
+    def _set_runtime_state_value(self, key: str, value: Any) -> None:
+        self._world_runtime_state[key] = value
+
+    def _get_sanguo_discourtesy_count(self) -> int:
+        try:
+            return int(self._get_runtime_state_value("sanguo_discourtesy_count", 0) or 0)
+        except Exception:
+            return 0
+
+    def _get_sanguo_inner_dialogue_stage(self) -> str:
+        return str(self._get_runtime_state_value("sanguo_inner_dialogue_stage", "") or "").strip()
+
+    def _set_sanguo_inner_dialogue_stage(self, stage: str) -> None:
+        self._set_runtime_state_value("sanguo_inner_dialogue_stage", str(stage or "").strip())
+
+    def _build_sanguo_player_key_facts(self, player_input: str) -> List[str]:
+        facts: List[str] = []
+        if not self._is_sanguo_demo_scene():
+            return facts
+
+        current_map = self.game_state.get_current_map()
+        text = str(player_input or "").strip().lower()
+        if not current_map or not text:
+            return facts
+
+        if current_map.id == "map-cottage-inner-01":
+            facts.append("已见诸葛亮")
+            aspiration_pattern = r"匑扶汉室|兴复汉室|扶汉|请先生出山|辅佐汉室|辅佐我|共扶汉室"
+            if re.search(aspiration_pattern, text):
+                facts.append("已说明匑扶汉室志向")
+
+        return facts
+
+    def _build_sanguo_inner_dialogue_progression(self, player_input: str) -> Dict[str, Any]:
+        progression: Dict[str, Any] = {"fragments": [], "key_facts": [], "skip_npc_followup": False}
+        if not self._is_sanguo_demo_scene():
+            return progression
+
+        current_map = self.game_state.get_current_map()
+        text = str(player_input or "").strip().lower()
+        if not current_map or current_map.id != "map-cottage-inner-01" or not text:
+            return progression
+        if self._is_sanguo_discourteous_input(player_input):
+            return progression
+
+        progression["key_facts"].append("已见诸葛亮")
+        stage = self._get_sanguo_inner_dialogue_stage()
+        opening_pattern = r"仰慕|久仰|拜访孔明|拜见孔明|请见孔明|讨论天下之势|共议大事|愿闻先生高见|求先生指点|请先生指点|请教先生"
+        humble_pattern = r"没有.{0,4}高见|还望先生指点|还请先生指点|还请先生教我|请先生赐教|愿闻其详|但求先生教我|还望赐教"
+
+        if not stage and re.search(opening_pattern, text):
+            self._set_sanguo_inner_dialogue_stage("asked_local_strategy")
+            progression["key_facts"].append("孔明已问新野之策")
+            return progression
+
+        if stage == "asked_local_strategy" and re.search(humble_pattern, text):
+            self._set_sanguo_inner_dialogue_stage("entered_longzhong_discussion")
+            progression["skip_npc_followup"] = True
+            progression["key_facts"].extend(["孔明已问新野之策", "已当面请教天下之势"])
+            progression["fragments"].append(
+                {
+                    "actor_id": "char-zhuge-01",
+                    "actor_name": "诸葛亮",
+                    "text": (
+                        "诸葛亮见你并不矜饰，反而坦陈自己所见未广，神色间多了几分认同。"
+                        "他不再重复追问旧题，只是轻摇羽扇，从荆州与新野的处境徐徐说起，"
+                        "又将曹操、孙权与群雄形势一层层铺开。室内茶烟袅袅，话题也终于由试探转入真正的筹谋。"
+                    ),
+                }
+            )
+
+        return progression
+
+    def _is_sanguo_discourteous_input(self, player_input: str) -> bool:
+        if not self._is_sanguo_demo_scene():
+            return False
+
+        current_map = self.game_state.get_current_map()
+        if not current_map or current_map.id not in {"map-cottage-outer-01", "map-cottage-inner-01"}:
+            return False
+
+        text = str(player_input or "").strip().lower()
+        if not text:
+            return False
+
+        apology_pattern = r"对不起|抱歉|请罪|失礼|恕罪|见谅|知错|惭愧|勿怪"
+        if re.search(apology_pattern, text):
+            return False
+
+        impatient_pattern = r"快点|赶紧|马上|立刻|等不及|不等了|别等|快叫|赶快通报|少啰嗦|别废话|催他|催促"
+        disrespect_pattern = r"一点礼数不知|架子真大|面子这么大|哼|给我通报|让他出来|砸门|闯进去|硬闯|强闯"
+        violence_pattern = r"(?:打|揍|殴打|暴打|毒打|踢|踹|扇|抽)(?:了|过)?(?:他|她|人|童子|书童|小童|孔明|诸葛亮)?(?:一拳|一脚|耳光|巴掌|一下|一顿|几下)?"
+        return bool(
+            re.search(impatient_pattern, text)
+            or re.search(disrespect_pattern, text)
+            or re.search(violence_pattern, text)
+        )
+
+    def _build_sanguo_discourtesy_warning(self) -> str:
+        current_map = self.game_state.get_current_map()
+        if current_map and current_map.id == "map-cottage-inner-01":
+            return (
+                "诸葛亮并未厉声斥责，只是收敛笑意，平静地提醒你：求贤之人若先失了分寸，"
+                "纵然来意再大，也会先伤了别人对你的信任。你若真想共议大事，便该先收住"
+                "怒气与傲慢；若再以无礼相逼，这场拜访便到此为止。"
+            )
+        return (
+            "书童强忍惊惧，仍旧正色提醒你：这里是先生静居之所，不可因一时急躁便失了礼数。"
+            "若你真心求见，就该先学会克制情绪、尊重旁人；若再以无礼或逼迫相待，先生不会再见你。"
+        )
+
+    def _apply_sanguo_discourtesy_rule(self, player_input: str) -> str:
+        if not self._is_sanguo_discourteous_input(player_input):
+            return ""
+
+        count = self._get_sanguo_discourtesy_count() + 1
+        self._set_runtime_state_value("sanguo_discourtesy_count", count)
+        if count == 1:
+            return self._build_sanguo_discourtesy_warning()
+        return ""
+
     @staticmethod
     def _has_pending_field_change(
         changes: Optional[List[StateChange]],
@@ -2175,12 +2411,14 @@ class GameEngine:
         text = str(player_input or "").strip().lower()
         if not text:
             return progression
+        if self._is_sanguo_discourteous_input(player_input):
+            return progression
 
         wait_pattern = (
             "\u7b49\u5f85|\u7b49\u5019|\u7a0d\u5019|\u9759\u5019|\u7acb\u5019|"
             "\u7ee7\u7eed\u7b49|\u4e00\u76f4\u7b49|\u8010\u5fc3\u7b49|\u606d\u5019|\u5019\u7740|\u7b49\u5230|\u7b49\u5148\u751f"
         )
-        rude_pattern = "\u4e0d\u7b49|\u522b\u7b49|\u4e0d\u60f3\u7b49|\u50ac\u4fc3|\u50ac\u4ed6|\u50ac\u4e00\u50ac|\u95ef\u8fdb\u53bb|\u786c\u95ef|\u5f3a\u95ef"
+        rude_pattern = "\u4e0d\u7b49|\u522b\u7b49|\u4e0d\u60f3\u7b49|\u4e0d\u613f\u518d\u7b49|\u4e0d\u613f\u7b49|\u4e0d\u613f\u518d\u7b49\u5f85|\u79bb\u5f00|\u544a\u8f9e|\u50ac\u4fc3|\u50ac\u4ed6|\u50ac\u4e00\u50ac|\u95ef\u8fdb\u53bb|\u786c\u95ef|\u5f3a\u95ef"
         if not re.search(wait_pattern, text):
             return progression
         if re.search(rude_pattern, text):
@@ -2818,6 +3056,14 @@ class GameEngine:
             except (TypeError, ValueError):
                 return False
             return int(self.game_state.turn_count or 0) >= threshold
+
+        if expr.startswith("sanguo_discourtesy_count_ge:"):
+            raw_threshold = expr.split(":", 1)[1].strip()
+            try:
+                threshold = int(raw_threshold)
+            except (TypeError, ValueError):
+                return False
+            return self._get_sanguo_discourtesy_count() >= threshold
 
         return False
 

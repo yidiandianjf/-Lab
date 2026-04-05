@@ -8,7 +8,8 @@
     "enabled": true,
     "type": "api",
     "config_path": "config/security_llm.json",
-    "timeout_ms": 500,
+    "timeout_ms": 1000,
+    "max_retries": 1,
     "threshold": {
       "block_level": 2,
       "warn_level": 1

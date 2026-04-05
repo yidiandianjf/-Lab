@@ -30,13 +30,14 @@ class InputType(Enum):
 
 @dataclass
 class InputResult:
-    """输入处理结果"""
+    """??????"""
     input_type: InputType
-    command: Optional[str] = None  # 基础指令类型
-    args: Optional[List[str]] = None  # 指令参数
-    natural_input: Optional[str] = None  # 自然语言输入
-    direct_response: Optional[str] = None  # 直接回复（基础指令处理结果）
-    changes: Optional[List[StateChange]] = None  # 状态变更列表
+    command: Optional[str] = None  # ??????
+    args: Optional[List[str]] = None  # ????
+    natural_input: Optional[str] = None  # ??????
+    direct_response: Optional[str] = None  # ??????????????
+    changes: Optional[List[StateChange]] = None  # ??????
+    engine_action: Optional[Dict[str, Any]] = None  # ??????????????
 
 
 class InputSystem:
@@ -51,22 +52,24 @@ class InputSystem:
     
     # 基础指令列表
     BASIC_COMMANDS = {
-        "look": "查看当前场景或指定目标",
-        "inventory": "查看背包",
-        "pickup": "捡起物品",
-        "drop": "放下物品",
-        "use": "使用物品",
-        "give": "给予物品给角色",
-        "move": "移动到相邻场景",
-        "go": "移动到相邻场景",
-        "status": "查看自身状态",
-        "where": "查看当前位置",
-        "save": "保存进度",
-        "load": "加载进度",
-        "reset": "重置游戏",
-        "debug": "切换调试模式",
-        "help": "显示帮助",
-        "exit": "退出游戏",
+        "look": "???????????",
+        "inventory": "????",
+        "pickup": "????",
+        "drop": "????",
+        "use": "????",
+        "give": "???????",
+        "move": "???????",
+        "go": "???????",
+        "status": "??????",
+        "where": "??????",
+        "save": "????",
+        "load": "????",
+        "reset": "????",
+        "debug": "??????",
+        "screen": "??AI??",
+        "speed": "??????",
+        "help": "????",
+        "exit": "????",
     }
     
     def __init__(self, io_system: IOSystem, screener: Optional[InputScreener] = None):
@@ -90,7 +93,7 @@ class InputSystem:
         best_punct = max(cut.rfind("。"), cut.rfind("；"), cut.rfind("！"), cut.rfind("？"))
         if best_punct >= int(limit * 0.6):
             return cut[: best_punct + 1]
-        return cut.rstrip() + "..."
+        logger.info("Input系统初始化完成")
 
     @staticmethod
     def _player_scene(player: Optional[Character]) -> str:
@@ -145,14 +148,14 @@ class InputSystem:
         if not user_input:
             return InputResult(
                 input_type=InputType.BASIC_COMMAND,
-                direct_response="?????????????"
+                direct_response="请输入内容。"
             )
 
         def _blocked_response(reason: str) -> InputResult:
-            logger.warning("?????: %s", reason)
+            logger.warning("输入被拦截: %s", reason)
             return InputResult(
                 input_type=InputType.BASIC_COMMAND,
-                direct_response="???????????????????"
+                direct_response="您的输入未通过安全检查，请修改后重试。"
             )
 
         # ???/?????????????????? AI ??????
@@ -247,13 +250,19 @@ class InputSystem:
         # 执行对应指令
         handler = getattr(self, f"_cmd_{command}", None)
         if handler:
-            response, changes = handler(args, player, game_state)
+            payload = handler(args, player, game_state)
+            engine_action = None
+            if isinstance(payload, tuple) and len(payload) == 3:
+                response, changes, engine_action = payload
+            else:
+                response, changes = payload
             return InputResult(
                 input_type=InputType.BASIC_COMMAND,
                 command=command,
                 args=args,
                 direct_response=response,
-                changes=changes or []
+                changes=changes or [],
+                engine_action=engine_action,
             )
         
         return InputResult(
@@ -795,49 +804,41 @@ class InputSystem:
         player: Character,
         game_state: GameState
     ) -> Tuple[str, List[StateChange]]:
-        """
-        显示帮助信息
-        
-        Args:
-            args: 无参数
-            player: 玩家角色
-            game_state: 游戏状态
-            
-        Returns:
-            Tuple[描述文本, 变更列表]
-        """
+        """显示帮助文本。"""
         changes = []
-        
+
         help_text = "【基础指令列表】\n\n"
         help_text += "信息查看类:\n"
         help_text += "  \\look [目标]   - 查看当前场景或指定目标\n"
         help_text += "  \\inventory     - 查看背包\n"
         help_text += "  \\status        - 查看自身状态\n"
         help_text += "  \\where         - 查看当前位置\n\n"
-        
+
         help_text += "物品操作类:\n"
         help_text += "  \\pickup <物品名> - 捡起物品\n"
         help_text += "  \\drop <物品名>   - 放下物品\n\n"
         help_text += "  \\use <物品名>    - 使用物品\n"
         help_text += "  \\give <物品名> to <角色> - 给予物品\n\n"
-        help_text += "  \\move to=<地图ID>|<方向|地图ID> - 移动到相邻场景\n"
-        
+        help_text += "  \\move to=<地图ID>|<方向|地图ID> - 移动到相邻场景\n\n"
+
         help_text += "游戏控制类:\n"
         help_text += "  \\save [存档名]   - 保存进度\n"
         help_text += "  \\load [存档名]   - 加载进度\n"
         help_text += "  \\reset          - 重置游戏\n"
         help_text += "  \\debug          - 切换调试模式\n"
+        help_text += "  \\screen ai on|off|status - 开关AI筛查\n"
+        help_text += "  \\speed fast|quality|status - 切换响应速度模式\n"
         help_text += "  \\help           - 显示此帮助\n"
         help_text += "  \\exit           - 退出游戏\n\n"
-        
+
         help_text += "【自然语言】\n"
         help_text += "直接输入你想做的事情，例如:\n"
-        help_text += "  '我向婆子问安，请她带我从西角门进去'\n"
-        help_text += "  '我整理衣襟，随婆子往贾母正房去'\n"
-        help_text += "  '我给外祖母行礼，再轻声答王熙凤的话'\n"
-        
+        help_text += "  '向书童说明来意，请他代为通报'\n"
+        help_text += "  '我愿意在门外继续等候先生醒来'\n"
+        help_text += "  '我想稳住心绪，再进内院问安'\n"
+
         return help_text, changes
-    
+
     def _cmd_exit(
         self,
         args: List[str],
@@ -874,12 +875,41 @@ class InputSystem:
         player: Character,
         game_state: GameState
     ) -> Tuple[str, List[StateChange]]:
-        """基础调试开关提示。"""
+        """?????????"""
         mode = args[0].lower() if args else "on"
         if mode not in ("on", "off"):
             mode = "on"
         return f"DEBUG_MODE_{mode.upper()}", []
-    
+
+    def _cmd_screen(
+        self,
+        args: List[str],
+        player: Character,
+        game_state: GameState
+    ) -> Tuple[str, List[StateChange], Dict[str, Any]]:
+        changes = []
+        normalized_args = [str(arg).strip().lower() for arg in args if str(arg).strip()]
+        if normalized_args and normalized_args[0] in {"ai", "aiscreen", "screening"}:
+            normalized_args = normalized_args[1:]
+        action = normalized_args[0] if normalized_args else "status"
+        if action not in {"on", "off", "status"}:
+            return r"用法: \screen ai on|off|status", changes, None
+        return "", changes, {"type": "ai_screening", "action": action}
+
+    def _cmd_speed(
+        self,
+        args: List[str],
+        player: Character,
+        game_state: GameState
+    ) -> Tuple[str, List[StateChange], Dict[str, Any]]:
+        changes = []
+        mode = str(args[0]).strip().lower() if args else "status"
+        if mode == "normal":
+            mode = "quality"
+        if mode not in {"fast", "quality", "status"}:
+            return r"用法: \speed fast|quality|status", changes, None
+        return "", changes, {"type": "speed_mode", "mode": mode}
+
     def get_help_text(self) -> str:
         """获取帮助文本"""
         return self._cmd_help([], None, None)[0]

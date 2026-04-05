@@ -86,6 +86,7 @@ class LLMConfig:
     temperature: float = 0.7
     max_tokens: Optional[int] = None
     timeout: float = 60.0
+    client_max_retries: Optional[int] = None
     enable_thinking: bool = False  # 是否启用思考模式（非流式调用必须为False）
     structured_output: bool = False  # 是否启用结构化输出
 
@@ -153,6 +154,13 @@ class LLMConfig:
             timeout = float(timeout_env)
         else:
             timeout = float(file_data.get("timeout", 60.0))
+
+        client_max_retries_env = os.getenv("LLM_CLIENT_MAX_RETRIES")
+        if client_max_retries_env is not None:
+            client_max_retries = int(client_max_retries_env)
+        else:
+            raw_client_retries = file_data.get("client_max_retries")
+            client_max_retries = int(raw_client_retries) if raw_client_retries is not None else None
         
         # 思考模式设置（默认False，非流式调用必须为False）
         enable_thinking = file_data.get("enable_thinking", False)
@@ -171,6 +179,7 @@ class LLMConfig:
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
+            client_max_retries=client_max_retries,
             enable_thinking=enable_thinking,
             structured_output=structured_output,
         )
@@ -279,6 +288,8 @@ class LLMService:
         client_kwargs = {"api_key": self.config.api_key, "timeout": self.config.timeout}
         if self.config.base_url:
             client_kwargs["base_url"] = self.config.base_url
+        if getattr(self.config, "client_max_retries", None) is not None:
+            client_kwargs["max_retries"] = int(self.config.client_max_retries)
         
         self.client = OpenAI(**client_kwargs)
         logger.info(f"LLM服务初始化完成，模型: {self.config.model}")

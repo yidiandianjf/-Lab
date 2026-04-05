@@ -3,8 +3,9 @@
   "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
   "model": "qwen3-0.6b",
   "temperature": 0.0,
-  "max_tokens": 512,
-  "timeout": 30.0,
+  "max_tokens": 160,
+  "timeout": 1.0,
   "enable_thinking": false,
-  "structured_output": true
+  "structured_output": true,
+  "client_max_retries": 0
 }
