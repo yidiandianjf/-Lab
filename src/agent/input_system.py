@@ -30,15 +30,15 @@ class InputType(Enum):
 
 @dataclass
 class InputResult:
-    """??????"""
+    """输入处理结果"""
     input_type: InputType
-    command: Optional[str] = None  # ??????
-    args: Optional[List[str]] = None  # ????
-    natural_input: Optional[str] = None  # ??????
-    direct_response: Optional[str] = None  # ??????????????
-    changes: Optional[List[StateChange]] = None  # ??????
-    engine_action: Optional[Dict[str, Any]] = None  # ??????????????
-    frontend_payload: Optional[Dict[str, Any]] = None  # ????????/UI???
+    command: Optional[str] = None  # 基础指令类型
+    args: Optional[List[str]] = None  # 指令参数
+    natural_input: Optional[str] = None  # 自然语言输入
+    direct_response: Optional[str] = None  # 直接响应（基础指令可直接回复）
+    changes: Optional[List[StateChange]] = None  # 状态变更
+    engine_action: Optional[Dict[str, Any]] = None  # 引擎动作（需要引擎执行的操作）
+    frontend_payload: Optional[Dict[str, Any]] = None  # 前端数据/UI更新
 
 
 class InputSystem:
@@ -53,24 +53,24 @@ class InputSystem:
     
     # 基础指令列表
     BASIC_COMMANDS = {
-        "look": "???????????",
-        "inventory": "????",
-        "pickup": "????",
-        "drop": "????",
-        "use": "????",
-        "give": "???????",
-        "move": "???????",
-        "go": "???????",
-        "status": "??????",
-        "where": "??????",
-        "save": "????",
-        "load": "????",
-        "reset": "????",
-        "debug": "??????",
-        "screen": "??AI??",
-        "speed": "??????",
-        "help": "????",
-        "exit": "????",
+        "look": "查看当前场景或指定目标",
+        "inventory": "查看背包",
+        "pickup": "拾取物品",
+        "drop": "丢弃物品",
+        "use": "使用物品",
+        "give": "给予物品给某人",
+        "move": "移动到指定位置",
+        "go": "移动到指定位置",
+        "status": "查看角色状态",
+        "where": "查看当前位置",
+        "save": "保存游戏",
+        "load": "加载游戏",
+        "reset": "重置游戏",
+        "debug": "调试模式",
+        "screen": "切换AI筛查",
+        "speed": "调整播放速度",
+        "help": "帮助信息",
+        "exit": "退出游戏",
     }
     
     def __init__(self, io_system: IOSystem, screener: Optional[InputScreener] = None):

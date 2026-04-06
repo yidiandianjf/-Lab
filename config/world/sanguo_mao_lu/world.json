@@ -12,6 +12,13 @@
   "npc_response_mode": "unified",
   "npc_director_use_llm": true,
   "narrative_merge_use_llm": true,
-  "end_condition": "完成与诸葛亮的会面，展现诚意与谦逊，获得隆中对的战略指导。玩家需要在茅庐外等候，通过恰当的礼仪和诚意打动诸葛亮，最终进入茅庐内完成对话。",
-  "entry_scene_narrative": "建安十二年冬，新野城外。你带着关羽、张飞二弟，第三次来到隆中。前两次拜访皆未能见到先生，这次你决心无论如何也要等到诸葛亮出来。远远望去，茅庐掩映在松竹之间，炊烟袅袅，一派清幽景象。你翻身下马，整理衣冠，准备再次拜访。"
+  "end_condition": "完成与诸葛亮的会面，展现诚意与礼仪，获得隆中对的战略指导。",
+  "entry_scene_narrative": "建安十二年冬，新野城外。你第三次来到隆中，整肃衣冠，准备再访诸葛亮。",
+  "backgrounds": {
+    "default_image": "data/local_backgrounds/sanguo_cottage_outer.jpg",
+    "scene_images": {
+      "map-cottage-outer-01": "data/local_backgrounds/sanguo_cottage_outer.jpg",
+      "map-cottage-inner-01": "data/local_backgrounds/sanguo_cottage_inner.jpg"
+    }
+  }
 }

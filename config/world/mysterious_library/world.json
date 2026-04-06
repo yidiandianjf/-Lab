@@ -13,5 +13,14 @@
   "npc_director_use_llm": true,
   "narrative_merge_use_llm": true,
   "end_condition": "总是不结局，故事永远在继续。",
-  "entry_scene_narrative": "深夜，你踏入神秘图书馆。潮湿纸张味、低沉脚步声与某种不安同时被听见。"
+  "entry_scene_narrative": "深夜，你踏入神秘图书馆。潮湿纸张味与低沉脚步声交织，不安悄然蔓延。",
+  "backgrounds": {
+    "default_image": "data/local_backgrounds/_fallback_default.svg",
+    "scene_images": {
+      "map-room-archive-01": "data/local_backgrounds/_fallback_default.svg",
+      "map-room-corridor-01": "data/local_backgrounds/_fallback_default.svg",
+      "map-room-library-01": "data/local_backgrounds/_fallback_default.svg",
+      "map-room-secret-01": "data/local_backgrounds/_fallback_default.svg"
+    }
+  }
 }

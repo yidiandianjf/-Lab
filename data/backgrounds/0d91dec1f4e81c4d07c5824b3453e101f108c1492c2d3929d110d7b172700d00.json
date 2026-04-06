@@ -1,0 +1,11 @@
+{
+  "scene_name": "测试场景",
+  "scene_description": "昏暗走廊",
+  "source_text": "你听见远处脚步声",
+  "world_name": "COC",
+  "prompt": "为文字冒险游戏生成一张无文字背景图。\n画幅比例必须是 3:2 横向。\n要求：电影感、环境叙事、光影层次、氛围压抑或神秘。\n禁止：任何可读文字、水印、边框、UI元素。\n请做可铺满页面的完整构图，不要留白。\n世界：COC\n当前场景：测试场景\n场景描述：昏暗走廊\n本轮叙事要点：你听见远处脚步声\n风格关键词：atmospheric, cinematic lighting, environmental storytelling",
+  "model": "qwen-image",
+  "size": "1536x1024",
+  "fallback": true,
+  "fallback_reason": "Connection error."
+}

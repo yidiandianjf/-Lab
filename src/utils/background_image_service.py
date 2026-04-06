@@ -35,6 +35,25 @@ class BackgroundImageConfigError(Exception):
     """Raised when background image generation is not configured correctly."""
 
 
+def _load_json_file(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _pick(*values: Any) -> Any:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+    return None
+
+
 @dataclass
 class BackgroundImageConfig:
     api_key: str
@@ -49,41 +68,85 @@ class BackgroundImageConfig:
 
     @classmethod
     def from_sources(cls, config_path: str = "config/llm.json") -> "BackgroundImageConfig":
-        file_data: Dict[str, Any] = {}
         path = Path(config_path)
-        if path.exists():
-            with open(path, "r", encoding="utf-8") as f:
-                file_data = json.load(f)
+        file_data: Dict[str, Any] = _load_json_file(path)
 
-        api_key = (
-            os.getenv("LLM_IMAGE_API_KEY")
-            or file_data.get("image_api_key")
-            or os.getenv("LLM_API_KEY")
-            or file_data.get("api_key")
+        dm_file_data: Dict[str, Any] = {}
+        for candidate in (path.with_name("dm_lm.json"), path.with_name("dm_llm.json")):
+            candidate_data = _load_json_file(candidate)
+            if candidate_data:
+                dm_file_data = candidate_data
+                break
+
+        api_key = _pick(
+            os.getenv("LLM_IMAGE_API_KEY"),
+            file_data.get("image_api_key"),
+            dm_file_data.get("image_api_key"),
+            os.getenv("LLM_API_KEY"),
+            file_data.get("api_key"),
+            dm_file_data.get("api_key"),
         )
         if not api_key:
-            raise BackgroundImageConfigError(
-                "未配置图片生成 API Key，请设置 LLM_IMAGE_API_KEY 或 config/llm.json 中的 image_api_key。"
-            )
+            raise BackgroundImageConfigError("未配置图片生成 API Key，请设置 LLM_IMAGE_API_KEY 或 config/llm.json。")
 
-        base_url = (
-            os.getenv("LLM_IMAGE_BASE_URL")
-            or file_data.get("image_base_url")
-            or os.getenv("LLM_BASE_URL")
-            or file_data.get("base_url")
+        base_url = _pick(
+            os.getenv("LLM_IMAGE_BASE_URL"),
+            file_data.get("image_base_url"),
+            dm_file_data.get("image_base_url"),
+            os.getenv("LLM_BASE_URL"),
+            file_data.get("base_url"),
+            dm_file_data.get("base_url"),
         )
-        model = os.getenv("LLM_IMAGE_MODEL") or file_data.get("image_model") or "gpt-image-1"
-        size = os.getenv("LLM_IMAGE_SIZE") or file_data.get("image_size") or "1536x1024"
-        quality = os.getenv("LLM_IMAGE_QUALITY") or file_data.get("image_quality") or "medium"
-        style = os.getenv("LLM_IMAGE_STYLE") or file_data.get("image_style") or "natural"
-        output_format = os.getenv("LLM_IMAGE_OUTPUT_FORMAT") or file_data.get("image_output_format") or "webp"
-        timeout = float(os.getenv("LLM_IMAGE_TIMEOUT") or file_data.get("image_timeout") or 120.0)
-        cfg_raw = os.getenv("LLM_IMAGE_CFG") or file_data.get("image_cfg")
-        cfg = float(cfg_raw) if cfg_raw is not None else 4.0
+
+        text_model = str(_pick(file_data.get("model"), dm_file_data.get("model"), ""))
+        model = str(
+            _pick(
+                os.getenv("LLM_IMAGE_MODEL"),
+                file_data.get("image_model"),
+                dm_file_data.get("image_model"),
+                "gpt-image-1",
+            )
+        )
+        if model == "gpt-image-1" and (
+            "dashscope.aliyuncs.com" in str(base_url or "") or text_model.startswith("qwen")
+        ):
+            # DashScope + Qwen setups should default to a Qwen image model.
+            model = "qwen-image"
+
+        size = str(_pick(os.getenv("LLM_IMAGE_SIZE"), file_data.get("image_size"), dm_file_data.get("image_size"), "1536x1024"))
+        quality = str(_pick(os.getenv("LLM_IMAGE_QUALITY"), file_data.get("image_quality"), dm_file_data.get("image_quality"), "medium"))
+        style = str(_pick(os.getenv("LLM_IMAGE_STYLE"), file_data.get("image_style"), dm_file_data.get("image_style"), "natural"))
+        output_format = str(
+            _pick(
+                os.getenv("LLM_IMAGE_OUTPUT_FORMAT"),
+                file_data.get("image_output_format"),
+                dm_file_data.get("image_output_format"),
+                "png" if model.startswith("qwen") else "webp",
+            )
+        ).lower()
+
+        timeout_raw = _pick(
+            os.getenv("LLM_IMAGE_TIMEOUT"),
+            file_data.get("image_timeout"),
+            dm_file_data.get("image_timeout"),
+            file_data.get("timeout"),
+            dm_file_data.get("timeout"),
+            120.0,
+        )
+        try:
+            timeout = float(timeout_raw)
+        except (TypeError, ValueError):
+            timeout = 120.0
+
+        cfg_raw = _pick(os.getenv("LLM_IMAGE_CFG"), file_data.get("image_cfg"), dm_file_data.get("image_cfg"))
+        try:
+            cfg = float(cfg_raw) if cfg_raw is not None else 4.0
+        except (TypeError, ValueError):
+            cfg = 4.0
 
         return cls(
-            api_key=api_key,
-            base_url=base_url,
+            api_key=str(api_key),
+            base_url=str(base_url) if base_url else None,
             model=model,
             size=size,
             quality=quality,
@@ -107,10 +170,11 @@ class BackgroundImageService:
             raise ImportError("未安装 openai 库，无法启用 AI 背景图。")
 
         self.config = config or BackgroundImageConfig.from_sources(config_path=config_path)
-        client_kwargs = {"api_key": self.config.api_key}
+        client_kwargs: Dict[str, Any] = {"api_key": self.config.api_key}
         if self.config.base_url:
             client_kwargs["base_url"] = self.config.base_url
         self.client = OpenAI(**client_kwargs)
+
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.ssl_context = self._build_ssl_context()
@@ -125,22 +189,21 @@ class BackgroundImageService:
         """Turn the latest story beat into a stable background-art prompt."""
         aspect_ratio_label = self.aspect_ratio_label()
         parts = [
-            "请为一款克苏鲁调查题材文字冒险游戏生成网页背景图。",
-            f"要求：固定 {aspect_ratio_label} 横向环境概念图，电影感构图，氛围浓厚，适合叠加文字界面，不要擅自改变画幅比例。",
-            "构图要求：图像必须边到边铺满整个画幅，不要白边、黑边、相框边、纸张边、胶片边、页边距或任何形式的留白边缘。",
-            "禁止：任何可读文字、汉字、英文字母、数字、水印、logo、UI、边框、分镜格、角色半身像特写、卡通风。",
-            "额外限制：不要出现招牌、海报、书封标题、档案页可辨认文字、字幕、界面字样；如果画面里出现书籍、纸张、铭牌或标识，只表现材质和轮廓，不要渲染可辨认内容。",
-            "画面重点：场景氛围、光影、线索感、微妙不安，而不是战斗动作。",
+            "为文字冒险游戏生成一张无文字背景图。",
+            f"画幅比例必须是 {aspect_ratio_label} 横向。",
+            "要求：电影感、环境叙事、光影层次、氛围压抑或神秘。",
+            "禁止：任何可读文字、水印、边框、UI元素。",
+            "请做可铺满页面的完整构图，不要留白。",
         ]
         if world_name:
             parts.append(f"世界：{world_name}")
         if scene_name:
             parts.append(f"当前场景：{scene_name}")
         if scene_description:
-            parts.append(f"场景公开描述：{scene_description.strip()}")
+            parts.append(f"场景描述：{scene_description.strip()}")
         if source_text:
-            parts.append(f"本轮叙事重点：{source_text.strip()}")
-        parts.append("风格关键词：dark academia, occult archive, cinematic lighting, atmospheric, environmental storytelling.")
+            parts.append(f"本轮叙事要点：{source_text.strip()}")
+        parts.append("风格关键词：atmospheric, cinematic lighting, environmental storytelling")
         return "\n".join(parts)
 
     def aspect_ratio_pair(self) -> tuple[int, int]:
@@ -214,6 +277,7 @@ class BackgroundImageService:
         cache_key = self.build_cache_key(prompt)
         extension = self._extension_for_format(self.config.output_format)
         image_path = self.cache_dir / f"{cache_key}.{extension}"
+        fallback_path = self.cache_dir / f"{cache_key}.svg"
         metadata_path = self.cache_dir / f"{cache_key}.json"
 
         if image_path.exists() and not force:
@@ -222,32 +286,76 @@ class BackgroundImageService:
                 "prompt": prompt,
                 "cache_hit": True,
                 "metadata_path": str(metadata_path),
+                "fallback": False,
             }
 
-        image_bytes = self._generate_image_bytes(prompt)
-        image_path.write_bytes(image_bytes)
-        metadata_path.write_text(
-            json.dumps(
-                {
-                    "scene_name": scene_name,
-                    "scene_description": scene_description,
-                    "source_text": source_text,
-                    "world_name": world_name,
-                    "prompt": prompt,
-                    "model": self.config.model,
-                    "size": self.config.size,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        return {
-            "path": str(image_path),
-            "prompt": prompt,
-            "cache_hit": False,
-            "metadata_path": str(metadata_path),
-        }
+        if fallback_path.exists() and not force:
+            return {
+                "path": str(fallback_path),
+                "prompt": prompt,
+                "cache_hit": True,
+                "metadata_path": str(metadata_path),
+                "fallback": True,
+            }
+
+        try:
+            image_bytes = self._generate_image_bytes(prompt)
+            image_path.write_bytes(image_bytes)
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        "scene_name": scene_name,
+                        "scene_description": scene_description,
+                        "source_text": source_text,
+                        "world_name": world_name,
+                        "prompt": prompt,
+                        "model": self.config.model,
+                        "size": self.config.size,
+                        "fallback": False,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            return {
+                "path": str(image_path),
+                "prompt": prompt,
+                "cache_hit": False,
+                "metadata_path": str(metadata_path),
+                "fallback": False,
+            }
+        except Exception as exc:
+            # Keep the game usable when remote image APIs are unavailable.
+            logger.warning("Background image remote generation failed; using local fallback: %s", exc)
+            fallback_svg = self._build_fallback_svg(seed=cache_key)
+            fallback_path.write_text(fallback_svg, encoding="utf-8")
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        "scene_name": scene_name,
+                        "scene_description": scene_description,
+                        "source_text": source_text,
+                        "world_name": world_name,
+                        "prompt": prompt,
+                        "model": self.config.model,
+                        "size": self.config.size,
+                        "fallback": True,
+                        "fallback_reason": str(exc),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            return {
+                "path": str(fallback_path),
+                "prompt": prompt,
+                "cache_hit": False,
+                "metadata_path": str(metadata_path),
+                "fallback": True,
+                "fallback_reason": str(exc),
+            }
 
     def build_data_uri(self, image_path: str | Path) -> str:
         path = Path(image_path)
@@ -255,22 +363,46 @@ class BackgroundImageService:
         return f"data:{mime_type};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
 
     def _generate_image_bytes(self, prompt: str) -> bytes:
-        logger.info("正在生成 AI 背景图，模型=%s", self.config.model)
+        logger.info("Generating background image with model=%s", self.config.model)
+
         if self._is_siliconflow_endpoint():
             return self._generate_image_bytes_siliconflow(prompt)
 
-        response = self.client.images.generate(
-            prompt=prompt,
-            model=self.config.model,
-            size=self.config.size,
-            quality=self.config.quality,
-            style=self.config.style,
-            output_format=self.config.output_format,
-            response_format="b64_json",
-            timeout=self.config.timeout,
-        )
+        # First attempt: OpenAI-compatible full argument set.
+        try:
+            response = self.client.images.generate(
+                prompt=prompt,
+                model=self.config.model,
+                size=self.config.size,
+                quality=self.config.quality,
+                style=self.config.style,
+                output_format=self.config.output_format,
+                response_format="b64_json",
+                timeout=self.config.timeout,
+            )
+        except TypeError:
+            # Provider SDK shape mismatch: retry with a minimal compatible payload.
+            response = self.client.images.generate(
+                prompt=prompt,
+                model=self.config.model,
+                size=self.config.size,
+                timeout=self.config.timeout,
+            )
+        except Exception:
+            # Provider may reject optional arguments; retry once with minimal payload.
+            response = self.client.images.generate(
+                prompt=prompt,
+                model=self.config.model,
+                size=self.config.size,
+                timeout=self.config.timeout,
+            )
 
-        first = response.data[0] if getattr(response, "data", None) else None
+        first = None
+        if getattr(response, "data", None):
+            first = response.data[0]
+        elif isinstance(response, dict) and response.get("data"):
+            first = response["data"][0]
+
         if first is None:
             raise RuntimeError("图片生成接口未返回任何图像数据。")
 
@@ -280,17 +412,17 @@ class BackgroundImageService:
 
         url = getattr(first, "url", None)
         if url:
-            with urlopen(url, timeout=self.config.timeout) as remote:
+            with urlopen(url, timeout=self.config.timeout, context=self.ssl_context) as remote:
                 return remote.read()
 
         if isinstance(first, dict):
             if first.get("b64_json"):
                 return base64.b64decode(first["b64_json"])
             if first.get("url"):
-                with urlopen(first["url"], timeout=self.config.timeout) as remote:
+                with urlopen(first["url"], timeout=self.config.timeout, context=self.ssl_context) as remote:
                     return remote.read()
 
-        raise RuntimeError("图片生成接口返回了无法识别的数据格式。")
+        raise RuntimeError("图片生成接口返回了无法识别的结果结构。")
 
     def _generate_image_bytes_siliconflow(self, prompt: str) -> bytes:
         endpoint = self._siliconflow_image_endpoint()
@@ -320,7 +452,7 @@ class BackgroundImageService:
         first = images[0]
         url = first.get("url") if isinstance(first, dict) else None
         if not url:
-            raise RuntimeError(f"SiliconFlow 图片接口返回结果缺少 url: {body}")
+            raise RuntimeError(f"SiliconFlow 图片接口结果缺少 url: {body}")
 
         with urlopen(url, timeout=self.config.timeout, context=self.ssl_context) as remote:
             return remote.read()
@@ -358,17 +490,35 @@ class BackgroundImageService:
 
     @staticmethod
     def _extension_for_format(output_format: str) -> str:
-        output_format = (output_format or "webp").lower()
-        if output_format in {"jpeg", "jpg"}:
+        normalized = (output_format or "webp").lower().strip()
+        if normalized in {"jpeg", "jpg"}:
             return "jpg"
-        if output_format == "png":
+        if normalized == "png":
             return "png"
         return "webp"
 
     @staticmethod
     def _mime_for_extension(extension: str) -> str:
+        if extension == "svg":
+            return "image/svg+xml"
         if extension == "png":
             return "image/png"
         if extension in {"jpg", "jpeg"}:
             return "image/jpeg"
         return "image/webp"
+
+    @staticmethod
+    def _build_fallback_svg(seed: str) -> str:
+        """Generate a deterministic no-text atmospheric SVG background."""
+        s = (seed or "0" * 16).lower()
+        base = int(s[:8], 16)
+
+        def channel(offset: int, minimum: int, maximum: int) -> int:
+            span = maximum - minimum
+            return minimum + ((base >> offset) & 0xFF) % (span + 1)
+
+        c1 = (channel(0, 35, 95), channel(8, 28, 78), channel(16, 24, 72))
+        c2 = (channel(4, 76, 150), channel(12, 60, 128), channel(20, 44, 110))
+        c3 = (channel(2, 120, 190), channel(10, 98, 166), channel(18, 76, 148))
+
+        return f"""<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1536\" height=\"1024\" viewBox=\"0 0 1536 1024\">\n  <defs>\n    <linearGradient id=\"g0\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\">\n      <stop offset=\"0%\" stop-color=\"rgb({c1[0]},{c1[1]},{c1[2]})\"/>\n      <stop offset=\"55%\" stop-color=\"rgb({c2[0]},{c2[1]},{c2[2]})\"/>\n      <stop offset=\"100%\" stop-color=\"rgb({c3[0]},{c3[1]},{c3[2]})\"/>\n    </linearGradient>\n    <radialGradient id=\"g1\" cx=\"20%\" cy=\"15%\" r=\"60%\">\n      <stop offset=\"0%\" stop-color=\"rgba(255,240,215,0.26)\"/>\n      <stop offset=\"100%\" stop-color=\"rgba(255,240,215,0)\"/>\n    </radialGradient>\n    <radialGradient id=\"g2\" cx=\"80%\" cy=\"85%\" r=\"70%\">\n      <stop offset=\"0%\" stop-color=\"rgba(20,16,14,0.28)\"/>\n      <stop offset=\"100%\" stop-color=\"rgba(20,16,14,0)\"/>\n    </radialGradient>\n  </defs>\n  <rect width=\"1536\" height=\"1024\" fill=\"url(#g0)\"/>\n  <rect width=\"1536\" height=\"1024\" fill=\"url(#g1)\"/>\n  <rect width=\"1536\" height=\"1024\" fill=\"url(#g2)\"/>\n  <ellipse cx=\"420\" cy=\"330\" rx=\"320\" ry=\"210\" fill=\"rgba(255,255,255,0.06)\"/>\n  <ellipse cx=\"1180\" cy=\"700\" rx=\"360\" ry=\"260\" fill=\"rgba(0,0,0,0.10)\"/>\n</svg>"""

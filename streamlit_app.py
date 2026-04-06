@@ -16,7 +16,14 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Streamlit hot-reload can occasionally leave a non-package "src" module in memory
+# on Python 3.13, which breaks nested imports like src.rule.rule_system.
+_src_mod = sys.modules.get("src")
+if _src_mod is not None and not hasattr(_src_mod, "__path__"):
+    del sys.modules["src"]
+
 from src.main import initialize_game
+from src.utils.world_background_resolver import WorldBackgroundResolver
 try:
     from src.utils.background_image_service import BackgroundImageService, BackgroundImageConfigError
     _BACKGROUND_IMPORT_ERROR: str | None = None
@@ -36,16 +43,63 @@ WORLD_ROOT = ROOT / "config" / "world"
 DEFAULT_DB = ROOT / "data" / "game.db"
 SAVE_ROOT = ROOT / "data" / "saves"
 BACKGROUND_CACHE_DIR = ROOT / "data" / "backgrounds"
+LOCAL_BACKGROUND_DIR = ROOT / "data" / "local_backgrounds"
+LOCAL_FALLBACK_BACKGROUND_FILE = LOCAL_BACKGROUND_DIR / "_fallback_default.svg"
 
 WORLD_LABELS = {
     "mysterious_library": "COC",
-    "daiyu_enters_jia": "林黛玉",
+    "daiyu_enters_jia": "林黛玉进贾府",
     "sanguo_mao_lu": "三顾茅庐",
 }
 ALLOWED_WORLDS = ["mysterious_library", "daiyu_enters_jia", "sanguo_mao_lu"]
 
+BACKGROUND_RESOLVER = WorldBackgroundResolver(
+    project_root=ROOT,
+    world_root=WORLD_ROOT,
+    local_background_dir=LOCAL_BACKGROUND_DIR,
+    fallback_background_file=LOCAL_FALLBACK_BACKGROUND_FILE,
+)
+
 _BACKGROUND_SERVICE: Any = None
 _BACKGROUND_SERVICE_ERROR: str | None = None
+
+MOVE_INTENT_TOKENS = (
+    "去",
+    "前往",
+    "前去",
+    "走向",
+    "走到",
+    "进入",
+    "赶往",
+    "移动",
+    "出发",
+    "往",
+    "朝",
+    "向",
+)
+
+DIRECTION_ALIASES = {
+    "东": {"东", "东边", "东方", "向东", "往东", "朝东", "east", "e"},
+    "西": {"西", "西边", "西方", "向西", "往西", "朝西", "west", "w"},
+    "南": {"南", "南边", "南方", "向南", "往南", "朝南", "south", "s"},
+    "北": {"北", "北边", "北方", "向北", "往北", "朝北", "north", "n"},
+    "东北": {"东北", "东北方", "向东北", "往东北", "朝东北", "northeast", "ne"},
+    "东南": {"东南", "东南方", "向东南", "往东南", "朝东南", "southeast", "se"},
+    "西北": {"西北", "西北方", "向西北", "往西北", "朝西北", "northwest", "nw"},
+    "西南": {"西南", "西南方", "向西南", "往西南", "朝西南", "southwest", "sw"},
+    "上": {"上", "向上", "往上", "朝上", "up", "u"},
+    "下": {"下", "向下", "往下", "朝下", "down", "d"},
+    "里": {"里", "向里", "往里", "朝里", "内", "向内", "inside", "in"},
+    "外": {"外", "向外", "往外", "朝外", "outside", "out"},
+    "前": {"前", "向前", "往前", "朝前", "forward", "f"},
+    "后": {"后", "向后", "往后", "朝后", "back", "backward", "b"},
+}
+
+DIRECTION_ALIAS_TO_CANONICAL = {
+    alias: canonical
+    for canonical, aliases in DIRECTION_ALIASES.items()
+    for alias in aliases
+}
 
 st.set_page_config(
     page_title=APP_TITLE,
@@ -111,12 +165,14 @@ def bootstrap_session(world: str, load_name: str | None = None) -> None:
     st.session_state.last_check = None
     st.session_state.selected_world = world
     st.session_state._save_name = load_name or DEFAULT_SAVE
+    st.session_state.background_enabled = False
+    st.session_state.background_auto_update = False
     st.session_state.background_image_uri = None
     st.session_state.background_image_path = None
     st.session_state.background_prompt = ""
     st.session_state.background_source_signature = ""
     st.session_state.background_source_text = ""
-    st.session_state.background_status = "等待生成首张背景图。"
+    st.session_state.background_status = "已使用本地默认背景。"
     st.session_state.background_error = ""
     st.session_state.background_manual_clear = False
     st.session_state.background_aspect_ratio = "3 / 2"
@@ -126,7 +182,7 @@ def bootstrap_session(world: str, load_name: str | None = None) -> None:
     st.session_state.last_turn_input = ""
     st.session_state.last_turn_marker = None
 
-    # Do not auto-generate background here; avoid blocking page bootstrap.
+    apply_default_local_background(world, str(getattr(scene, "id", "") or ""))
 
 
 def ensure_session() -> None:
@@ -141,9 +197,8 @@ def ensure_session() -> None:
     if "last_check" not in st.session_state:
         st.session_state.last_check = None
     if "background_enabled" not in st.session_state:
-        st.session_state.background_enabled = True
+        st.session_state.background_enabled = False
     if "background_auto_update" not in st.session_state:
-        # Default to off for smoother interactions on slower machines/networks.
         st.session_state.background_auto_update = False
     if "background_image_uri" not in st.session_state:
         st.session_state.background_image_uri = None
@@ -152,7 +207,7 @@ def ensure_session() -> None:
     if "background_prompt" not in st.session_state:
         st.session_state.background_prompt = ""
     if "background_status" not in st.session_state:
-        st.session_state.background_status = "等待生成首张背景图。"
+        st.session_state.background_status = "已使用本地默认背景。"
     if "background_error" not in st.session_state:
         st.session_state.background_error = ""
     if "background_source_signature" not in st.session_state:
@@ -176,7 +231,13 @@ def ensure_session() -> None:
     if "last_turn_marker" not in st.session_state:
         st.session_state.last_turn_marker = None
 
-    # Avoid auto-generating background during normal reruns.
+    if not st.session_state.get("background_image_uri"):
+        apply_default_local_background(
+            active_world_name(),
+            current_scene_id(),
+        )
+    else:
+        sync_scene_background_if_needed(force=False)
 
 
 def startup_warnings() -> list[str]:
@@ -185,6 +246,11 @@ def startup_warnings() -> list[str]:
         warnings.append(f"背景图模块未成功加载，已自动降级。原因：{_BACKGROUND_IMPORT_ERROR}")
     if not DEFAULT_DB.exists():
         warnings.append(f"默认数据库不存在：{DEFAULT_DB}")
+    missing_preview, missing_total = configured_background_missing_items()
+    if missing_total > 0:
+        preview_text = "；".join(missing_preview)
+        suffix = f"；另有 {missing_total - len(missing_preview)} 项未列出" if missing_total > len(missing_preview) else ""
+        warnings.append(f"部分场景默认背景图文件缺失：{preview_text}{suffix}")
     return warnings
 
 
@@ -237,11 +303,253 @@ def sanitize_display_text(text: Any) -> str:
     return sanitized or "（无可显示文本）"
 
 
-def summarize(text: str, limit: int = 90) -> str:
-    normalized = " ".join((text or "").replace("\n", "，").split())
-    if len(normalized) <= limit:
-        return normalized
-    return normalized[: limit - 3].rstrip() + "..."
+def normalize_story_display_text(text: Any) -> str:
+    """Keep narrative output readable: no code fragments, no abrupt English tokens, no ellipsis tail."""
+    cleaned = sanitize_display_text(text)
+    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"\n+", "\n", cleaned).strip()
+
+    # Remove technical/code-ish English tokens in story prose.
+    cleaned = re.sub(r"\b(?:import|from|def|class|return|json|python|javascript|null|true|false|explicit)\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b[A-Za-z]{3,}\b", "", cleaned)
+
+    # Remove residual code punctuation noise.
+    cleaned = re.sub(r"[{}<>$#_`~^|]+", "", cleaned)
+    cleaned = re.sub(r"\([^)\n]{1,24}\)", "", cleaned)
+
+    # No trailing ellipsis; end with full sentence punctuation.
+    cleaned = re.sub(r"\.{3,}", "。", cleaned)
+    cleaned = cleaned.replace("…", "。")
+    cleaned = re.sub(r"([。！？]){2,}", r"\1", cleaned)
+    cleaned = re.sub(r"\n{2,}", "\n", cleaned).strip()
+
+    # Remove non-Chinese/code-like orphan lines.
+    kept_lines: list[str] = []
+    for line in cleaned.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if not re.search(r"[\u4e00-\u9fff]", line):
+            continue
+        kept_lines.append(line)
+    cleaned = "\n".join(kept_lines).strip()
+
+    if not cleaned:
+        return "剧情继续推进。"
+    if cleaned[-1] not in "。！？":
+        cleaned = f"{cleaned}。"
+    return cleaned
+
+
+def local_image_mime(path: Path) -> str:
+    return BACKGROUND_RESOLVER.local_image_mime(path)
+
+
+def local_background_fallback_svg() -> str:
+    return BACKGROUND_RESOLVER.local_background_fallback_svg()
+
+
+def world_config_path(world: str) -> Path:
+    return BACKGROUND_RESOLVER.world_config_path(world)
+
+
+def load_world_background_config(world: str) -> dict[str, Any]:
+    return BACKGROUND_RESOLVER.load_world_background_config(world)
+
+
+def absolute_media_path(raw_path: str) -> Path:
+    return BACKGROUND_RESOLVER.absolute_media_path(raw_path)
+
+
+def configured_background_missing_items(max_items: int = 6) -> tuple[list[str], int]:
+    return BACKGROUND_RESOLVER.configured_background_missing_items(list_worlds(), max_items=max_items)
+
+
+def current_scene_id() -> str:
+    try:
+        state = st.session_state.engine.get_game_state()
+        scene = state.get_current_map()
+        if scene and getattr(scene, "id", None):
+            return str(scene.id)
+    except Exception:
+        pass
+    return ""
+
+
+def active_world_name() -> str:
+    try:
+        engine = st.session_state.get("engine")
+        world_name = str(getattr(engine, "world_name", "") or "").strip()
+        if world_name:
+            return world_name
+    except Exception:
+        pass
+    return str(st.session_state.get("selected_world", DEFAULT_WORLD) or DEFAULT_WORLD)
+
+
+def ensure_local_fallback_background() -> Path:
+    return BACKGROUND_RESOLVER.ensure_local_fallback_background()
+
+
+def resolve_configured_scene_background_path(world: str, scene_id: str) -> tuple[Path, bool]:
+    return BACKGROUND_RESOLVER.resolve_configured_scene_background_path(world, scene_id)
+
+
+def default_local_background_path(world: str, scene_id: str = "") -> tuple[Path, bool]:
+    return resolve_configured_scene_background_path(world=world, scene_id=scene_id)
+
+
+def build_local_background_data_uri(path: Path) -> str:
+    return BACKGROUND_RESOLVER.build_local_background_data_uri(path)
+
+
+def apply_default_local_background(world: str, scene_id: str = "", *, status_text: str | None = None) -> None:
+    path, configured = default_local_background_path(world, scene_id)
+    st.session_state.background_image_path = str(path)
+    st.session_state.background_image_uri = build_local_background_data_uri(path)
+    st.session_state.background_prompt = ""
+    st.session_state.background_source_signature = ""
+    st.session_state.background_source_text = ""
+    st.session_state.background_manual_clear = False
+    st.session_state.background_error = ""
+
+    if status_text:
+        st.session_state.background_status = status_text
+    elif configured:
+        if scene_id:
+            st.session_state.background_status = f"已加载场景默认背景：{scene_id}"
+        else:
+            st.session_state.background_status = "已加载世界默认背景。"
+    else:
+        st.session_state.background_status = "背景配置图片未找到，已使用本地占位背景。"
+
+
+def sync_scene_background_if_needed(force: bool = False) -> None:
+    if st.session_state.get("background_enabled", False):
+        return
+
+    world = active_world_name()
+    scene_id = current_scene_id()
+    path, _ = default_local_background_path(world, scene_id)
+    previous = str(st.session_state.get("background_image_path") or "")
+    if not force and previous == str(path):
+        return
+    apply_default_local_background(world, scene_id)
+
+
+def on_background_enabled_toggle() -> None:
+    enabled = bool(st.session_state.get("background_enabled", False))
+    if enabled:
+        st.session_state.background_status = "AI 背景图已开启。点击“刷新背景”即可生成。"
+        st.session_state.background_error = ""
+    else:
+        st.session_state.background_auto_update = False
+        world = active_world_name()
+        scene_id = current_scene_id()
+        apply_default_local_background(world, scene_id, status_text="AI 背景图已关闭，当前使用场景默认背景。")
+
+
+def normalize_match_text(text: str) -> str:
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", str(text or "").lower())
+
+
+def canonical_direction(text: str) -> str | None:
+    compact = normalize_match_text(text)
+    return DIRECTION_ALIAS_TO_CANONICAL.get(compact)
+
+
+def direction_match_score(direction: str, compact_user_text: str) -> int:
+    if not direction:
+        return 0
+    compact_direction = normalize_match_text(direction)
+    if not compact_direction:
+        return 0
+
+    aliases = {compact_direction}
+    canonical = canonical_direction(compact_direction)
+    if canonical:
+        aliases.update(normalize_match_text(alias) for alias in DIRECTION_ALIASES.get(canonical, set()))
+
+    best = 0
+    for token in aliases:
+        if token and token in compact_user_text:
+            best = max(best, len(token))
+    return best
+
+
+def resolve_natural_move_command(user_text: str, exits: list[dict[str, str]]) -> str | None:
+    if not exits:
+        return None
+
+    stripped = str(user_text or "").strip()
+    if not stripped or stripped.startswith("\\"):
+        return None
+
+    compact = normalize_match_text(stripped)
+    if not compact:
+        return None
+
+    direct_direction = bool(canonical_direction(compact))
+    has_intent = direct_direction or any(token in compact for token in MOVE_INTENT_TOKENS)
+    if not has_intent:
+        return None
+
+    candidates: list[tuple[int, str]] = []
+    for exit_item in exits:
+        direction = str(exit_item.get("direction") or "").strip()
+        description = str(exit_item.get("description") or "").strip()
+        target_id = str(exit_item.get("target_id") or "").strip()
+        if not direction:
+            continue
+
+        score = 0
+        for field in (description, target_id):
+            field_compact = normalize_match_text(field)
+            if field_compact and field_compact in compact:
+                score = max(score, 200 + len(field_compact))
+
+        directional_score = direction_match_score(direction, compact)
+        if directional_score:
+            score = max(score, 100 + directional_score)
+
+        if score > 0:
+            candidates.append((score, direction))
+
+    if not candidates:
+        if len(exits) == 1 and has_intent:
+            only_direction = str(exits[0].get("direction") or "").strip()
+            return f"\\move {only_direction}" if only_direction else None
+        return None
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    best_score = candidates[0][0]
+    best = [direction for score, direction in candidates if score == best_score]
+    if len(best) != 1:
+        return None
+    return f"\\move {best[0]}"
+
+
+def ai_screening_enabled() -> bool:
+    engine = st.session_state.engine
+    if hasattr(engine, "get_ai_screening_status"):
+        try:
+            status = engine.get_ai_screening_status() or {}
+            return bool(status.get("enabled"))
+        except Exception:
+            return False
+    return False
+
+
+def fast_speed_enabled() -> bool:
+    engine = st.session_state.engine
+    if hasattr(engine, "get_speed_mode"):
+        try:
+            mode = str(engine.get_speed_mode() or "").strip().lower()
+            return mode == "fast"
+        except Exception:
+            return False
+    return False
 
 
 def get_background_service() -> BackgroundImageService | None:
@@ -402,18 +710,22 @@ def resolve_background_context(story_text: str) -> dict[str, str]:
         "scene_name": scene_name,
         "scene_description": scene_description,
         "source_text": source_text,
-        "world_name": st.session_state.get("selected_world", DEFAULT_WORLD),
+        "world_name": active_world_name(),
     }
 
 
-def refresh_background_image(force: bool = False, story_text: str = "") -> None:
-    if not st.session_state.get("background_enabled", True):
+def refresh_background_image(force: bool = False, story_text: str = "", ignore_enabled: bool = False) -> None:
+    if not st.session_state.get("background_enabled", False) and not ignore_enabled:
         return
 
     service = get_background_service()
     if service is None:
-        st.session_state.background_error = _BACKGROUND_SERVICE_ERROR or "当前未配置可用的图片生成服务。"
-        st.session_state.background_status = "AI 背景图不可用，已保留默认背景。"
+        st.session_state.background_error = ""
+        apply_default_local_background(
+            active_world_name(),
+            current_scene_id(),
+            status_text="AI 背景图不可用，已继续使用本地默认背景。",
+        )
         return
     st.session_state.background_aspect_ratio = service.aspect_ratio_css()
 
@@ -441,26 +753,33 @@ def refresh_background_image(force: bool = False, story_text: str = "") -> None:
     st.session_state.background_source_text = context["source_text"]
     st.session_state.background_manual_clear = False
     st.session_state.background_error = ""
-    st.session_state.background_status = (
-        "背景图已从本地缓存恢复。" if generated.get("cache_hit") else "背景图已根据最新叙事更新。"
-    )
+    if generated.get("fallback"):
+        st.session_state.background_status = (
+            "图片服务暂不可用，已切换为本地氛围背景。"
+            if not generated.get("cache_hit")
+            else "已加载本地氛围背景缓存。"
+        )
+    else:
+        st.session_state.background_status = (
+            "背景图已从本地缓存恢复。" if generated.get("cache_hit") else "背景图已根据最新叙事更新。"
+        )
 
 
 def clear_background_image() -> None:
-    st.session_state.background_image_uri = None
-    st.session_state.background_image_path = None
-    st.session_state.background_prompt = ""
-    st.session_state.background_source_signature = ""
-    st.session_state.background_source_text = ""
-    st.session_state.background_manual_clear = True
-    st.session_state.background_status = "已清除当前背景图，将回退到默认氛围底图。"
-    st.session_state.background_error = ""
+    world = active_world_name()
+    apply_default_local_background(world, current_scene_id(), status_text="已恢复场景默认背景。")
 
 
 def add_feed(role: str, content: str, kind: str = "text", extra: dict[str, Any] | None = None) -> None:
     if not content:
         return
-    safe_content = sanitize_display_text(content) if role == "assistant" else str(content)
+    if role == "assistant":
+        if kind in {"text", "narrative", "security", "ending", "error"}:
+            safe_content = normalize_story_display_text(content)
+        else:
+            safe_content = sanitize_display_text(content)
+    else:
+        safe_content = str(content)
     message = {
         "role": role,
         "content": safe_content,
@@ -491,6 +810,10 @@ def handle_turn(user_input: str, display_input: str | None = None) -> None:
     if not text:
         return
 
+    _, _, _, _, _, _, exits = visible_scene_data()
+    resolved_move = resolve_natural_move_command(text, exits)
+    engine_input = resolved_move or text
+
     if st.session_state.get("turn_in_progress", False):
         return
 
@@ -501,20 +824,20 @@ def handle_turn(user_input: str, display_input: str | None = None) -> None:
         turn_marker = None
 
     if (
-        text == st.session_state.get("last_turn_input", "")
+        engine_input == st.session_state.get("last_turn_input", "")
         and turn_marker is not None
         and turn_marker == st.session_state.get("last_turn_marker")
     ):
         return
 
     st.session_state.turn_in_progress = True
-    st.session_state.last_turn_input = text
+    st.session_state.last_turn_input = engine_input
     st.session_state.last_turn_marker = turn_marker
 
     add_feed("user", display_input or text)
 
     try:
-        raw_result = engine.process_input(text)
+        raw_result = engine.process_input(engine_input)
         result = normalize_turn_result(raw_result)
         if not result:
             add_feed("assistant", "引擎没有返回结果。", kind="error")
@@ -559,6 +882,8 @@ def handle_turn(user_input: str, display_input: str | None = None) -> None:
         if st.session_state.get("background_enabled") and st.session_state.get("background_auto_update", True):
             story_seed = str(result.get("narrative") or result.get("response") or "").strip()
             refresh_background_image(force=False, story_text=story_seed)
+        else:
+            sync_scene_background_if_needed(force=False)
 
     except Exception as exc:
         add_feed("assistant", f"处理输入时发生错误：{exc}", kind="error")
@@ -600,822 +925,298 @@ def inject_styles(background_image_uri: str | None = None, background_aspect_rat
     _ = background_image_uri
     style_block = """
         <style>
-        html, body, [class*="css"]  {
+        html, body, [class*="css"] {
             font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
-        }
-
-        h1, h2, h3 {
-            font-family: "STSong", "Noto Serif SC", serif !important;
-            letter-spacing: 0.02em;
         }
 
         .stApp {
             background:
-                linear-gradient(180deg, rgba(247, 241, 231, 0.96), rgba(240, 232, 220, 0.98)),
-                radial-gradient(circle at top left, rgba(147, 95, 54, 0.10), transparent 28%),
-                radial-gradient(circle at top right, rgba(65, 92, 79, 0.09), transparent 24%);
+                linear-gradient(180deg, rgba(246, 241, 233, 0.96), rgba(236, 228, 215, 0.98)),
+                radial-gradient(circle at top left, rgba(146, 94, 54, 0.10), transparent 28%),
+                radial-gradient(circle at top right, rgba(63, 89, 77, 0.08), transparent 24%);
         }
 
         .main .block-container {
-            max-width: 1520px;
-            padding-top: 1.55rem;
-            padding-bottom: 2.5rem;
-            padding-left: 1rem;
-            padding-right: 0.02rem;
-        }
-
-        .panel-card,
-        .history-card,
-        .input-card,
-        .rail-card,
-        .check-card {
-            border: 1px solid rgba(69, 48, 34, 0.18);
-            border-radius: 18px;
-            padding: 1rem 1.15rem;
-            background: rgba(255, 250, 244, 0.84);
-            box-shadow: 0 18px 40px rgba(59, 39, 26, 0.08);
+            max-width: 1320px;
+            padding-top: 1.1rem;
+            padding-bottom: 2rem;
         }
 
         .stage-shell {
             position: relative;
             overflow: hidden;
             aspect-ratio: __BG_ASPECT_RATIO__;
-            border-radius: 28px;
-            border: 1px solid rgba(69, 48, 34, 0.22);
-            box-shadow: 0 28px 60px rgba(50, 34, 23, 0.18);
-            background: linear-gradient(135deg, rgba(60, 42, 29, 0.96), rgba(28, 20, 14, 0.96));
+            border-radius: 20px;
+            border: 1px solid rgba(72, 52, 36, 0.26);
+            box-shadow: 0 22px 48px rgba(42, 30, 20, 0.18);
+            background: linear-gradient(145deg, rgba(56, 40, 28, 0.94), rgba(28, 20, 14, 0.97));
+            margin-bottom: 0.9rem;
         }
 
-        .stage-visual {
+        .stage-bg {
             position: absolute;
             inset: 0;
             width: 100%;
             height: 100%;
-            background:
-                radial-gradient(circle at top, rgba(255, 244, 224, 0.16), transparent 36%),
-                linear-gradient(180deg, rgba(26, 19, 13, 0.1), rgba(18, 13, 9, 0.55));
-        }
-
-        .stage-visual img {
-            position: absolute;
-            inset: 0;
-            width: 100%;
-            height: 100%;
-            display: block;
             object-fit: cover;
-            object-position: center center;
-            filter: saturate(1.03) contrast(1.02);
+            object-position: center 42%;
+            transform: scale(1.12);
+            transform-origin: center center;
+            filter: saturate(1.03) contrast(1.03);
         }
 
-        .stage-placeholder {
+        .stage-fallback {
             position: absolute;
             inset: 0;
             display: flex;
-            flex-direction: column;
-            justify-content: center;
-            padding: 2.3rem;
-            color: #f4e8da;
-            background:
-                radial-gradient(circle at top, rgba(255, 224, 187, 0.20), transparent 34%),
-                linear-gradient(135deg, rgba(119, 78, 46, 0.92), rgba(45, 32, 22, 0.98));
-        }
-
-        .stage-scrim {
-            position: absolute;
-            inset: 0;
-            background:
-                linear-gradient(180deg, rgba(19, 13, 9, 0.18) 0%, rgba(19, 13, 9, 0.04) 32%, rgba(19, 13, 9, 0.58) 100%),
-                linear-gradient(90deg, rgba(19, 13, 9, 0.22), rgba(19, 13, 9, 0) 42%, rgba(19, 13, 9, 0.14) 100%);
-            pointer-events: none;
-        }
-
-        .stage-layer {
-            position: absolute;
-            inset: 1rem;
-            z-index: 4;
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 0.75rem;
-            align-content: start;
-            overflow: auto;
-        }
-
-        .overlay-span {
-            grid-column: 1 / -1;
-        }
-
-        .overlay-card {
-            background: rgba(255, 248, 240, 0.72);
-            border: 1px solid rgba(61, 45, 33, 0.24);
-            border-radius: 14px;
-            padding: 0.72rem 0.86rem;
-            backdrop-filter: blur(5px);
-            color: #2f241a;
-            box-shadow: 0 8px 20px rgba(26, 18, 12, 0.12);
-        }
-
-        .overlay-security {
-            border-color: rgba(176, 46, 46, 0.38);
-            background: rgba(255, 238, 236, 0.8);
-        }
-
-        .overlay-title {
-            font-size: 0.76rem;
-            font-weight: 700;
-            letter-spacing: 0.07em;
-            text-transform: uppercase;
-            color: #6e4f39;
-            margin-bottom: 0.35rem;
-        }
-
-        .overlay-card h3 {
-            margin: 0 0 0.3rem;
-            font-size: 1.14rem;
-            color: #2a1f16;
-        }
-
-        .overlay-meta {
-            font-size: 0.84rem;
-            color: #4f3d2e;
-            margin-bottom: 0.36rem;
-        }
-
-        .overlay-card p {
-            margin: 0;
-            line-height: 1.55;
-            color: #2b221a;
-        }
-
-        .overlay-list {
-            margin: 0;
-            padding-left: 1rem;
-            line-height: 1.52;
-        }
-
-        .overlay-note {
-            margin-top: 0.4rem;
-            font-size: 0.84rem;
-            color: #5d4736;
-        }
-
-        .overlay-chips {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.4rem;
-        }
-
-        .overlay-chip,
-        .overlay-empty {
-            display: inline-flex;
             align-items: center;
-            border-radius: 999px;
-            padding: 0.22rem 0.56rem;
-            font-size: 0.84rem;
-            border: 1px solid rgba(95, 73, 54, 0.3);
-            background: rgba(255, 255, 255, 0.6);
-            color: #3b2e23;
+            justify-content: center;
+            color: #f8ede0;
+            background:
+                radial-gradient(circle at top, rgba(255, 225, 189, 0.21), transparent 36%),
+                linear-gradient(135deg, rgba(122, 82, 49, 0.92), rgba(51, 36, 24, 0.98));
+            font-size: 1.05rem;
+            letter-spacing: 0.02em;
         }
 
-        .stage-topbar,
-        .stage-dialogue {
-            position: absolute;
-            left: 1.2rem;
-            right: 1.2rem;
-            z-index: 2;
-        }
-
-        .stage-topbar {
-            top: 1.15rem;
-            display: flex;
-            justify-content: flex-start;
-            align-items: flex-start;
-        }
-
-        .scene-overlay {
-            position: relative;
-            max-width: min(22rem, calc(100% - 8rem));
-            border-radius: 18px;
-            background: rgba(35, 25, 18, 0.42);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 239, 226, 0.12);
-            overflow: hidden;
-        }
-
-        .scene-overlay summary,
-        .stage-dialogue-details summary {
-            list-style: none;
-            cursor: pointer;
-        }
-
-        .scene-overlay summary {
-            padding: 0.62rem 0.82rem;
-            color: #fff6ee;
-            font-size: 0.84rem;
-            font-weight: 600;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-        }
-
-        .scene-overlay[open] summary {
+        .stage-mask {
             position: absolute;
             inset: 0;
+            background:
+                linear-gradient(180deg, rgba(16, 11, 8, 0.26) 0%, rgba(16, 11, 8, 0.12) 38%, rgba(16, 11, 8, 0.66) 100%);
+        }
+
+        .stage-overlay {
+            position: absolute;
+            inset: 0.95rem 0.95rem 0.45rem;
             z-index: 3;
-            padding: 0;
-            background: transparent;
+            display: grid;
+            grid-template-columns: minmax(240px, 1fr) minmax(300px, 1.22fr) minmax(240px, 1fr);
+            grid-template-rows: auto auto 1fr auto;
+            column-gap: 0.8rem;
+            row-gap: 0.62rem;
+            align-items: start;
         }
 
-        .scene-overlay[open] summary span {
-            opacity: 0;
+        .glass {
+            border: 1px solid rgba(64, 47, 34, 0.28);
+            border-radius: 12px;
+            background: rgba(255, 249, 241, 0.84);
+            backdrop-filter: blur(6px);
+            padding: 0.64rem 0.8rem;
+            color: #2d2219;
+            box-shadow: 0 8px 18px rgba(27, 18, 12, 0.13);
         }
 
-        .scene-overlay summary::-webkit-details-marker,
-        .stage-dialogue-details summary::-webkit-details-marker {
-            display: none;
+        .glass.alert {
+            border-color: rgba(165, 44, 44, 0.40);
+            background: rgba(255, 236, 234, 0.90);
         }
 
-        .scene-overlay-body {
-            padding: 0 0.82rem 0.88rem;
-            border-top: 1px solid rgba(255, 239, 226, 0.10);
+        .stage-card-scene {
+            grid-column: 1;
+            grid-row: 1;
         }
 
-        .scene-overlay-title {
-            display: none;
+        .stage-card-exits {
+            grid-column: 3;
+            grid-row: 1;
         }
 
-        .scene-overlay-body h3 {
-            margin: 0.72rem 0 0.35rem;
-            color: #fff7ef;
+        .stage-card-npcs {
+            grid-column: 1;
+            grid-row: 2;
+        }
+
+        .stage-card-items {
+            grid-column: 3;
+            grid-row: 2;
+        }
+
+        .stage-card-story {
+            grid-column: 1 / -1;
+            grid-row: 4;
+            align-self: end;
+            justify-self: center;
+            width: min(980px, 94%);
+            max-width: 980px;
+        }
+
+        .glass h3 {
+            margin: 0 0 0.3rem;
+            color: #2c2118;
             font-size: 1.08rem;
         }
 
-        .scene-overlay-body p {
-            margin: 0;
-            color: rgba(255, 244, 235, 0.92);
-            font-size: 0.94rem;
-            line-height: 1.66;
-        }
-
-        .scene-overlay:not([open]) .scene-overlay-body,
-        .stage-dialogue-details:not([open]) .stage-dialogue-body {
-            display: none;
-        }
-
-        .scene-overlay[open] .scene-overlay-body {
-            position: relative;
-            z-index: 2;
-            padding-top: 0.82rem;
-            padding-bottom: 1rem;
-            pointer-events: none;
-        }
-
-        .scene-overlay[open] .scene-overlay-title {
-            display: block;
-            margin: 0 0 0.45rem;
-            color: #fff3e4;
-            font-size: 0.82rem;
+        .eyeline {
+            margin: 0 0 0.34rem;
+            color: #6a4f3b;
+            font-size: 0.74rem;
             font-weight: 700;
-            letter-spacing: 0.08em;
             text-transform: uppercase;
+            letter-spacing: 0.06em;
         }
 
-        .stage-hud {
-            position: absolute;
-            right: 1.2rem;
-            top: 1.15rem;
-            z-index: 2;
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: flex-end;
-            gap: 0.5rem;
-            max-width: 42%;
-        }
-
-        .stage-hud span {
-            display: inline-flex;
-            align-items: center;
-            border-radius: 999px;
-            padding: 0.34rem 0.74rem;
-            background: rgba(34, 25, 18, 0.54);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 238, 221, 0.16);
-            color: #fff6ee;
+        .scene-meta {
+            margin: 0 0 0.3rem;
+            color: #4f3d2e;
             font-size: 0.84rem;
-            white-space: nowrap;
         }
 
-        .eyebrow {
-            text-transform: uppercase;
-            letter-spacing: 0.16em;
-            font-size: 0.72rem;
-            color: #6f5846;
-            margin-bottom: 0.45rem;
-            font-weight: 600;
-        }
-
-        .scene-overlay .eyebrow,
-        .stage-placeholder .eyebrow,
-        .stage-dialogue .eyebrow {
-            color: rgba(255, 236, 219, 0.76);
-        }
-
-        .stage-dialogue-bottom {
-            position: absolute;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            padding: 1.2rem 1.5rem 1.5rem;
-            background: linear-gradient(to top, rgba(15, 10, 6, 0.92) 0%, rgba(15, 10, 6, 0.75) 60%, transparent 100%);
-            border-radius: 0 0 28px 28px;
-            z-index: 3;
-        }
-
-        .stage-dialogue-bottom .eyebrow {
-            color: rgba(255, 236, 219, 0.85);
-            margin-bottom: 0.4rem;
-            font-size: 0.75rem;
-            letter-spacing: 0.1em;
-            text-transform: uppercase;
-        }
-
-        .stage-dialogue-bottom p {
+        .scene-text {
             margin: 0;
-            color: rgba(255, 248, 240, 0.95);
-            font-size: 1rem;
-            line-height: 1.65;
-            max-height: 6rem;
-            overflow-y: auto;
-        }
-
-        .dialogue-shell {
-            padding: 1rem 1.05rem;
-        }
-
-        .dialogue-shell p {
-            margin: 0.2rem 0 0;
-            color: #59473a;
-        }
-
-        .story-log-button {
-            display: flex;
-            align-items: center;
-            min-height: 100%;
-        }
-
-        .story-log-button.story-log-floating {
-            position: fixed;
-            top: 1.92rem;
-            right: 10.1rem;
-            z-index: 1200;
-            width: auto;
-        }
-
-        .story-log-button.story-log-floating .stButton {
-            width: auto;
-            margin: 0;
-        }
-
-        .story-log-button.story-log-floating .stButton > button {
-            min-height: 3rem;
-            width: auto;
-            height: 3rem;
-            padding: 0.3rem 0.72rem;
-            border-radius: 0.78rem;
-            border: 1px solid rgba(103, 79, 60, 0.24);
-            background: rgba(255, 250, 244, 0.96);
-            box-shadow: 0 10px 22px rgba(61, 43, 30, 0.08);
-            backdrop-filter: blur(10px);
-            color: #4a3629;
-        }
-
-        .gear-toggle {
-            display: flex;
-            justify-content: flex-end;
-            align-items: flex-start;
-            width: auto;
-        }
-
-        .gear-toggle .stButton {
-            width: auto;
-            margin: 0;
-        }
-
-        .gear-toggle .stButton > button {
-            min-height: 3rem;
-            width: auto;
-            height: 3rem;
-            padding: 0.45rem 0.95rem;
-            border-radius: 0.82rem;
-            border: 1px solid rgba(103, 79, 60, 0.24);
-            background: rgba(255, 250, 244, 0.96);
-            box-shadow: 0 10px 22px rgba(61, 43, 30, 0.12);
-            color: #4a3629;
-            font-size: 0.92rem !important;
-            font-weight: 700;
-            letter-spacing: 0.02em;
-            line-height: 1 !important;
-            white-space: nowrap;
-        }
-
-        .story-log-button .stButton {
-            width: 100%;
-            margin: 0;
-        }
-
-        .story-log-button .stButton > button {
-            min-height: 3rem;
-            height: 3rem;
-            border-radius: 0.78rem;
-            border: 1px solid rgba(103, 79, 60, 0.24);
-            background: rgba(255, 250, 244, 0.96);
-            box-shadow: 0 10px 22px rgba(61, 43, 30, 0.08);
-            padding: 0.3rem 0.72rem;
-        }
-
-        div[data-testid="stHorizontalBlock"]:has(.story-log-button) {
-            margin-top: -0.68rem;
-            align-items: center;
-        }
-
-        div[data-testid="stHorizontalBlock"]:has(.story-log-button) > div[data-testid="column"] {
-            display: flex;
-            align-items: center;
-        }
-
-        div[data-testid="stHorizontalBlock"]:has(.right-rail-title) {
-            align-items: flex-start;
-        }
-
-        div[data-testid="stHorizontalBlock"]:has(.right-rail-title) > div[data-testid="column"]:first-child {
-            margin-top: -0.68rem;
-        }
-
-        .right-rail-title {
-            padding: 0.9rem 1rem;
-            margin-bottom: 0.85rem;
-            border-radius: 18px;
-            border: 1px solid rgba(112, 84, 62, 0.24);
-            background: linear-gradient(180deg, rgba(221, 206, 188, 0.97), rgba(209, 191, 171, 0.98));
-            box-shadow: 0 18px 34px rgba(58, 40, 28, 0.10);
-        }
-
-        .right-rail-title h3 {
-            margin: 0;
-            color: #2f241c;
-            font-size: 1.34rem;
-            font-weight: 800;
-            text-align: center;
-        }
-
-        .info-overview {
-            margin-bottom: 0.9rem;
-            padding: 0.95rem 1rem;
-            border-radius: 18px;
-            border: 1px solid rgba(118, 89, 66, 0.16);
-            background: linear-gradient(180deg, rgba(246, 239, 230, 0.98), rgba(237, 228, 214, 0.98));
-            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
-        }
-
-        .info-overview h4 {
-            margin: 0.1rem 0 0.4rem;
-            color: #2d221b;
-            font-size: 1.18rem;
-            font-weight: 700;
-        }
-
-        .info-overview p {
-            margin: 0;
-            color: #5b4739;
-            font-size: 0.94rem;
             line-height: 1.58;
         }
 
-        .section-note {
-            margin: 0 0 0.75rem;
-            color: #6a5546;
-            font-size: 0.85rem;
-            line-height: 1.45;
-        }
-
-        .status-metrics-wrap {
-            display: flex;
-            justify-content: center;
-            padding: 0.78rem 0 1.68rem;
-        }
-
-        .status-metrics {
-            display: flex;
-            flex-direction: column;
-            gap: 0.22rem;
-            width: min(100%, 14rem);
-            margin: 0 auto;
-        }
-
-        .status-card {
-            border: none;
-            background: transparent;
-            padding: 0.14rem 0;
-            display: flex;
-            flex-direction: row;
-            align-items: center;
-            justify-content: space-between;
-            gap: 1rem;
-            min-height: auto;
-            text-align: left;
-            width: 100%;
-            line-height: 1.45;
-        }
-
-        .status-card-label {
-            display: inline-flex;
-            color: #2b211a;
-            font-size: 1rem;
-            letter-spacing: 0;
-            text-transform: none;
-            white-space: nowrap;
-            font-weight: 400;
-            line-height: 1.45;
-        }
-
-        .status-card-value {
-            display: inline-grid;
-            grid-template-columns: 4ch 1ch 4ch;
-            align-items: center;
-            justify-content: end;
-            color: #2b211a;
-            font-size: 1rem;
-            line-height: 1.45;
-            font-weight: 400;
-            text-align: right;
-            font-variant-numeric: tabular-nums;
-        }
-
-        .status-card-current,
-        .status-card-max {
-            display: inline-block;
-        }
-
-        .status-card-current {
-            text-align: right;
-        }
-
-        .status-card-sep {
-            text-align: center;
-        }
-
-        .status-card-max {
-            text-align: left;
-        }
-
-        .artifact-chip-row {
+        .pill-wrap {
             display: flex;
             flex-wrap: wrap;
-            gap: 0.55rem;
+            gap: 0.38rem;
         }
 
-        .artifact-chip {
+        .pill {
             display: inline-flex;
             align-items: center;
-            padding: 0.34rem 0.78rem;
             border-radius: 999px;
-            border: 1px solid rgba(101, 76, 57, 0.18);
-            background: linear-gradient(180deg, rgba(241, 231, 215, 0.96), rgba(231, 219, 201, 0.96));
-            color: #47352b;
-            font-size: 0.9rem;
-            box-shadow: 0 8px 16px rgba(73, 52, 37, 0.05);
+            border: 1px solid rgba(97, 74, 55, 0.30);
+            background: rgba(255, 255, 255, 0.62);
+            padding: 0.2rem 0.5rem;
+            font-size: 0.84rem;
+            color: #3a2d23;
         }
 
-        .fact-grid {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 0.72rem;
-        }
-
-        .fact-card {
-            padding: 0.72rem 0.82rem;
+        .feed-shell {
+            border: 1px solid rgba(85, 63, 46, 0.18);
             border-radius: 14px;
-            border: 1px solid rgba(112, 84, 62, 0.16);
-            background: rgba(255, 250, 244, 0.78);
-            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
-        }
-
-        .fact-label {
-            display: block;
-            margin-bottom: 0.16rem;
-            color: #705748;
-            font-size: 0.74rem;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-        }
-
-        .fact-value {
-            display: block;
-            color: #2d221b;
-            font-size: 1.02rem;
-            font-weight: 700;
-        }
-
-        .check-card strong {
-            font-size: 1.05rem;
-        }
-
-        .check-card {
-            border-radius: 14px;
-            padding: 0.92rem 1rem;
-            background: rgba(255, 250, 244, 0.82);
-            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.56);
-        }
-
-        .check-card.critical { border-left: 6px solid #315b4c; }
-        .check-card.success { border-left: 6px solid #55734a; }
-        .check-card.failure { border-left: 6px solid #9a6d34; }
-        .check-card.fumble { border-left: 6px solid #7b2f2f; }
-
-        .stButton > button {
-            border-radius: 999px;
-            border: 1px solid rgba(94, 68, 50, 0.2);
-            min-height: 2.45rem;
-            background: rgba(255, 249, 241, 0.88);
-            color: #2b211a;
-            font-weight: 600;
-        }
-
-        .stButton > button[kind="primary"] {
-            background: linear-gradient(135deg, #8a5a34, #6e4424);
-            color: #fffaf2;
-            border-color: #6e4424;
-        }
-
-        .story-log-button .stButton > button,
-        .sidebar-toggle .stButton > button {
-            font-size: 0.92rem;
-        }
-
-        .story-log-button .stButton > button p {
-            white-space: nowrap;
-            line-height: 1;
-            text-align: center;
-        }
-
-        div[data-testid="stHorizontalBlock"]:has(.story-log-button) > div[data-testid="column"]:first-child button {
-            font-size: 0.5rem !important;
-        }
-
-        div[data-testid="stHorizontalBlock"]:has(.story-log-button) > div[data-testid="column"]:first-child button * {
-            font-size: 0.5rem !important;
-            line-height: 1 !important;
-            white-space: nowrap !important;
+            background: rgba(255, 251, 246, 0.82);
+            padding: 0.55rem 0.6rem;
         }
 
         div[data-testid="stChatMessage"] {
-            background: rgba(255, 250, 245, 0.7);
-            border: 1px solid rgba(94, 68, 50, 0.11);
-            border-radius: 18px;
-            padding: 0.3rem 0.5rem;
+            background: rgba(255, 251, 246, 0.78);
+            border: 1px solid rgba(95, 71, 52, 0.12);
+            border-radius: 14px;
+            padding: 0.25rem 0.45rem;
         }
 
-        div[data-testid="stExpander"] {
-            border: 1px solid rgba(108, 80, 58, 0.18);
-            border-radius: 16px;
-            background: linear-gradient(180deg, rgba(233, 220, 204, 0.95), rgba(223, 208, 191, 0.97));
-            box-shadow: 0 12px 24px rgba(60, 42, 30, 0.07);
-        }
-
-        div[data-testid="stExpander"] summary {
-            padding: 0.18rem 0.08rem;
-            color: #2d221b;
-            font-weight: 700;
-            font-size: 1rem;
-            letter-spacing: 0.01em;
-        }
-
-        div[data-testid="stExpanderDetails"] {
-            padding-top: 0.96rem;
-            padding-bottom: 1.18rem;
-        }
-
-        @media (max-width: 980px) {
-            .main .block-container {
-                padding-top: 1.1rem;
+        @media (max-width: 1180px) {
+            .stage-overlay {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                grid-template-rows: auto auto 1fr auto;
+                inset: 0.65rem;
             }
 
-            .stage-shell,
-            .stage-visual {
-                aspect-ratio: auto;
+            .stage-card-scene {
+                grid-column: 1;
+                grid-row: 1;
             }
 
-            .stage-topbar {
-                flex-direction: column;
+            .stage-card-exits {
+                grid-column: 2;
+                grid-row: 1;
             }
 
-            .scene-overlay,
-            .stage-hud {
-                max-width: 100%;
+            .stage-card-npcs {
+                grid-column: 1;
+                grid-row: 2;
             }
 
-            .stage-dialogue {
-                left: 1rem;
-                right: 1rem;
+            .stage-card-items {
+                grid-column: 2;
+                grid-row: 2;
+            }
+
+            .stage-card-story {
+                grid-column: 1 / -1;
+                grid-row: 4;
+                width: 100%;
                 max-width: none;
-                bottom: 1rem;
             }
+        }
 
-            .story-log-button.story-log-floating {
-                top: 1rem;
-                right: 8.9rem;
-            }
-
-            .stage-layer {
+        @media (max-width: 920px) {
+            .stage-overlay {
                 grid-template-columns: 1fr;
-                inset: 0.7rem;
+                grid-template-rows: auto auto auto auto auto;
             }
 
-            .overlay-span {
-                grid-column: auto;
+            .stage-card-scene,
+            .stage-card-exits,
+            .stage-card-npcs,
+            .stage-card-items,
+            .stage-card-story {
+                grid-column: 1;
+                grid-row: auto;
+            }
+
+            .stage-card-story {
+                max-height: none;
             }
         }
         </style>
-        """
+    """
     st.markdown(style_block.replace("__BG_ASPECT_RATIO__", background_aspect_ratio), unsafe_allow_html=True)
 
 
-# 涓昏瑙夎垶鍙帮細淇濈暀鑳屾櫙鍥俱€佸満鏅弿杩版偓娴崱鍜岃交閲忎俊鎭?HUD銆?
 def render_header() -> None:
     state, player, scene, _, item_names, npc_names, exits = visible_scene_data()
     scene_name = scene.name if scene else "未进入场景"
-    raw_description = scene.description.get_public_text() if scene else "游戏尚未初始化完成。"
-    description = sanitize_display_text(raw_description)
-    stage_dialogue = latest_stage_dialogue(description)
-    dialogue_content = sanitize_display_text(stage_dialogue.get("content") or description or "调查仍在继续。")
-    is_security_dialogue = stage_dialogue.get("kind") == "security"
+    scene_desc = sanitize_display_text(scene.description.get_public_text() if scene else "游戏尚未初始化完成。")
+    stage_dialogue = latest_stage_dialogue(scene_desc)
+    dialogue_text = normalize_story_display_text(stage_dialogue.get("content") or scene_desc)
+    is_security = stage_dialogue.get("kind") == "security"
 
-    background_image_uri = (
-        st.session_state.get("background_image_uri")
-        if st.session_state.get("background_enabled", True)
-        else None
-    )
-    visual_markup = (
-        f'<img src="{html.escape(background_image_uri)}" alt="{html.escape(scene_name)}">'
-        if background_image_uri
-        else f"""
-        <div class="stage-placeholder">
-            <div class="eyebrow">Visual Stage</div>
-            <h2>{html.escape(scene_name)}</h2>
-            <p>{format_text(description)}</p>
-        </div>
-        """
-    )
-
-    def _chip_markup(values: list[str], empty_text: str) -> str:
-        if not values:
-            return f'<span class="overlay-empty">{html.escape(empty_text)}</span>'
-        return "".join(f'<span class="overlay-chip">{html.escape(one)}</span>' for one in values)
+    bg_uri = st.session_state.get("background_image_uri")
+    fallback_text = "背景图未加载"
+    if st.session_state.get("background_error"):
+        fallback_text = sanitize_display_text(st.session_state.get("background_error"))
+    elif st.session_state.get("background_status"):
+        fallback_text = sanitize_display_text(st.session_state.get("background_status"))
 
     if exits:
         exits_markup = "".join(
-            f"<li>{html.escape(one['direction'])} · {html.escape(one['description'] or one['target_id'])}</li>"
+            f"<span class='pill'>{html.escape(one['direction'])} · {html.escape(one['description'] or one['target_id'])}</span>"
             for one in exits
         )
-        exits_markup = f'<ul class="overlay-list">{exits_markup}</ul>'
     else:
-        exits_markup = '<span class="overlay-empty">当前没有可通往地点。</span>'
+        exits_markup = "<span class='pill'>当前没有可通往地点</span>"
 
-    scene_meta = f"回合 {state.turn_count} · 玩家 {player.name if player else '未知'}"
-    dialogue_card_class = "overlay-card overlay-span overlay-security" if is_security_dialogue else "overlay-card overlay-span"
+    def pills(values: list[str], empty_text: str) -> str:
+        if not values:
+            return f"<span class='pill'>{html.escape(empty_text)}</span>"
+        return "".join(f"<span class='pill'>{html.escape(v)}</span>" for v in values)
 
     render_html(
         f"""
         <div class="stage-shell">
-            <div class="stage-visual">
-                {visual_markup}
-                <div class="stage-scrim"></div>
-            </div>
-            <div class="stage-layer">
-                <section class="overlay-card overlay-span">
-                    <div class="overlay-title">当前场景</div>
+            {f'<img class="stage-bg" src="{html.escape(bg_uri)}" alt="scene">' if bg_uri else f'<div class="stage-fallback">{html.escape(fallback_text)}</div>'}
+            <div class="stage-mask"></div>
+            <div class="stage-overlay">
+                <section class="glass stage-card-scene">
+                    <div class="eyeline">当前场景</div>
                     <h3>{html.escape(scene_name)}</h3>
-                    <div class="overlay-meta">{html.escape(scene_meta)}</div>
-                    <p>{format_text(description)}</p>
+                    <div class="scene-meta">回合 {state.turn_count} · 玩家 {html.escape(player.name if player else '未知')}</div>
+                    <p class="scene-text">{format_text(scene_desc)}</p>
                 </section>
 
-                <section class="overlay-card overlay-span">
-                    <div class="overlay-title">可通往地点</div>
-                    {exits_markup}
-                    <div class="overlay-note">移动请在输入框手动输入：\\move 方向</div>
+                <section class="glass stage-card-exits">
+                    <div class="eyeline">可通往地点</div>
+                    <div class="pill-wrap">{exits_markup}</div>
                 </section>
 
-                <section class="overlay-card">
-                    <div class="overlay-title">在场角色</div>
-                    <div class="overlay-chips">{_chip_markup(npc_names, "当前没有其他在场角色。")}</div>
+                <section class="glass stage-card-npcs">
+                    <div class="eyeline">在场角色</div>
+                    <div class="pill-wrap">{pills(npc_names, '当前没有其他在场角色')}</div>
                 </section>
 
-                <section class="overlay-card">
-                    <div class="overlay-title">可见物品</div>
-                    <div class="overlay-chips">{_chip_markup(item_names, "当前没有可见物品。")}</div>
+                <section class="glass stage-card-items">
+                    <div class="eyeline">可见物品</div>
+                    <div class="pill-wrap">{pills(item_names, '当前没有可见物品')}</div>
                 </section>
 
-                <section class="{dialogue_card_class}">
-                    <div class="overlay-title">{html.escape(str(stage_dialogue.get("speaker") or "剧情"))}</div>
-                    <p>{format_text(dialogue_content)}</p>
+                <section class="{'glass alert stage-card-story' if is_security else 'glass stage-card-story'}">
+                    <div class="eyeline">{html.escape(str(stage_dialogue.get('speaker') or '剧情'))}</div>
+                    <p class="scene-text">{format_text(dialogue_text)}</p>
                 </section>
             </div>
         </div>
@@ -1424,10 +1225,11 @@ def render_header() -> None:
 
 
 def render_main_scene_panel() -> None:
-    """Reserved for compatibility; scene summary is now rendered in the stage overlay."""
+    """Reserved for compatibility; stage now contains scene blocks."""
     return
 
-def render_feed_panel(*, show_title: bool = True, height: int = 420) -> None:
+
+def render_feed_panel(*, show_title: bool = True, height: int = 360) -> None:
     if show_title:
         st.subheader("剧情记录")
     if not st.session_state.feed:
@@ -1438,35 +1240,27 @@ def render_feed_panel(*, show_title: bool = True, height: int = 420) -> None:
         for message in st.session_state.feed:
             with st.chat_message(message["role"]):
                 kind = message.get("kind", "text")
-                if kind == "check":
-                    extra = message.get("extra", {})
-                    render_html(
-                        f"""
-                        <div class="check-card {html.escape(extra.get('result_class', 'neutral'))}">
-                            <div class="eyebrow">Check Result</div>
-                            <strong>{html.escape(extra.get('result_text', '未知'))}</strong><br>
-                            d100：{extra.get('dice_roll', '-')} / 目标值：{extra.get('target_value', '-')} / 属性值：{extra.get('actor_value', '-')}
-                        </div>
-                        """
-                    )
-                    if extra.get("detail"):
-                        st.caption(extra["detail"])
-                elif kind == "system":
-                    st.caption(message["content"])
+                text = str(message.get("content", ""))
+                if kind == "system":
+                    st.caption(text)
                 elif kind == "error":
-                    st.error(message["content"])
+                    st.error(text)
                 elif kind == "security":
-                    st.warning(message["content"])
+                    st.warning(text)
                     extra = message.get("extra", {})
                     if isinstance(extra, dict) and extra.get("hint"):
                         st.caption(str(extra["hint"]))
-                elif kind == "ending":
-                    st.warning(message["content"])
-                else:
-                    st.markdown(
-                        f"<p>{format_text(str(message.get('content', '')))}</p>",
-                        unsafe_allow_html=True,
+                elif kind == "check":
+                    extra = message.get("extra", {})
+                    st.info(
+                        f"鉴定：{extra.get('result_text', '未知')} | d100={extra.get('dice_roll', '-')} | 目标={extra.get('target_value', '-')}"
                     )
+                    if extra.get("detail"):
+                        st.caption(str(extra["detail"]))
+                elif kind == "ending":
+                    st.warning(text)
+                else:
+                    st.markdown(f"<p>{format_text(text)}</p>", unsafe_allow_html=True)
 
 
 def render_exit_buttons(exits: list[dict[str, str]], key_prefix: str) -> None:
@@ -1477,67 +1271,46 @@ def render_exit_buttons(exits: list[dict[str, str]], key_prefix: str) -> None:
 
     labels = [f"{one['direction']} → {one['description'] or one['target_id']}" for one in exits]
     render_chips(labels, "当前没有可通往地点。")
-    st.caption("移动请在输入框手动输入：\\move 方向")
 
 
 def render_quick_actions(key_prefix: str) -> None:
+    screen_on = ai_screening_enabled()
+    speed_fast = fast_speed_enabled()
+
     action_cols = st.columns(2, gap="small")
-    quick_actions = [
-        ("筛查状态", "\\screen ai status"),
-        ("筛查开启", "\\screen ai on"),
-        ("筛查关闭", "\\screen ai off"),
-        ("速度状态", "\\speed status"),
-        ("极速模式", "\\speed fast"),
-        ("质量模式", "\\speed quality"),
-    ]
-    for idx, (label, command) in enumerate(quick_actions):
-        target = action_cols[idx % 2]
-        if target.button(label, key=f"{key_prefix}-{idx}", use_container_width=True):
-            handle_turn(command, display_input=label)
-            st.rerun()
+    left_label = f"筛查状态：{'开' if screen_on else '关'}"
+    right_label = f"速度状态：{'极速' if speed_fast else '标准'}"
+
+    if action_cols[0].button(left_label, key=f"{key_prefix}-screen-toggle", use_container_width=True):
+        command = "\\screen ai off" if screen_on else "\\screen ai on"
+        display = f"筛查状态切换为{'关' if screen_on else '开'}"
+        handle_turn(command, display_input=display)
+        st.rerun()
+
+    if action_cols[1].button(right_label, key=f"{key_prefix}-speed-toggle", use_container_width=True):
+        command = "\\speed quality" if speed_fast else "\\speed fast"
+        display = f"速度状态切换为{'标准' if speed_fast else '极速'}"
+        handle_turn(command, display_input=display)
+        st.rerun()
 
 
 def render_right_sidebar(show_title: bool = True, *, bordered: bool = True) -> None:
     state, player, scene, inventory_names, _item_names, _npc_names, exits = visible_scene_data()
     with st.container(border=bordered):
         if show_title:
-            render_html(
-                """
-                <div class="right-rail-title">
-                    <h3>游戏信息</h3>
-                </div>
-                """
-            )
+            st.markdown("### 游戏信息")
 
         if not player:
             st.warning("当前未找到玩家角色。")
             return
 
         scene_name = scene.name if scene else "未知场景"
-        scene_summary = " · ".join(
-            [
-                f"回合 {state.turn_count}",
-                f"背包 {len(inventory_names)} 项",
-                f"可通往地点 {len(exits)}",
-            ]
-        )
-        render_html(
-            f"""
-            <div class="info-overview">
-                <div class="eyebrow">当前概览</div>
-                <h4>{html.escape(scene_name)}</h4>
-                <p>{html.escape(scene_summary)}</p>
-            </div>
-            """
-        )
+        st.caption(f"{scene_name} · 回合 {state.turn_count} · 背包 {len(inventory_names)} 项 · 可通往地点 {len(exits)}")
 
         with st.expander("背包", expanded=False):
             render_chips(inventory_names, "背包当前为空。")
 
-        with st.expander("移动路线", expanded=False):
-            render_exit_buttons(exits, key_prefix="right-move")
-
-        with st.expander("常用动作", expanded=False):
+        with st.expander("系统状态", expanded=True):
             runtime_status = get_runtime_control_status()
             render_fact_grid(
                 [
@@ -1545,54 +1318,36 @@ def render_right_sidebar(show_title: bool = True, *, bordered: bool = True) -> N
                     ("速度模式", runtime_status["speed_mode"]),
                 ]
             )
+
+        with st.expander("快捷命令", expanded=False):
             render_quick_actions("right-quick")
 
 
 def render_story_log_toggle(*, floating: bool = False) -> None:
-    class_name = "story-log-button story-log-floating" if floating else "story-log-button"
-    st.markdown(f'<div class="{class_name}">', unsafe_allow_html=True)
-    if st.button("鍓ф儏", key="story-log-toggle", use_container_width=True):
-        st.session_state.story_log_open = True
-        st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
+    _ = floating
+    return
 
 
-# 娓告垙淇℃伅鍏ュ彛鏀惧湪宸︿晶杈规爮閲岋紝鐐瑰嚮鍚庡脊鍑烘父鎴忎俊鎭獥鍙ｃ€?
 def render_game_info_toggle() -> None:
-    if st.button("娓告垙淇℃伅", key="game-info-toggle", use_container_width=True):
-        st.session_state.right_sidebar_open = True
-        st.rerun()
+    return
 
 
-# 鍓ф儏璁板綍鍏抽棴鍥炶皟銆?
 def close_story_log() -> None:
     st.session_state.story_log_open = False
 
 
-# 娓告垙淇℃伅鍏抽棴鍥炶皟銆?
 def close_game_info_dialog() -> None:
     st.session_state.right_sidebar_open = False
 
 
-# 鍓ф儏璁板綍浠ュぇ寮瑰眰褰㈠紡灞曠ず锛岄伩鍏嶅帇缂╀富杈撳叆鍖恒€?
-@st.dialog("鍓ф儏璁板綍", width="large", on_dismiss=close_story_log)
 def render_story_log_dialog() -> None:
-    render_feed_panel(show_title=False, height=560)
-    if st.button("鍏抽棴鍓ф儏璁板綍", key="close-story-log-dialog", use_container_width=True):
-        close_story_log()
-        st.rerun()
+    render_feed_panel(show_title=True, height=420)
 
 
-# 娓告垙淇℃伅鐢ㄤ笌鈥滃墽鎯呪€濅竴鑷寸殑寮瑰眰灞曞紑銆?
-@st.dialog("娓告垙淇℃伅", width="large", on_dismiss=close_game_info_dialog)
 def render_game_info_dialog() -> None:
-    render_right_sidebar(show_title=False, bordered=False)
-    if st.button("鍏抽棴娓告垙淇℃伅", key="close-game-info-dialog", use_container_width=True):
-        close_game_info_dialog()
-        st.rerun()
+    render_right_sidebar(show_title=True, bordered=True)
 
 
-# 杈撳叆妗嗘彁浜ゅ洖璋冿細鏀寔鍥炶溅鍜屽彂閫佹寜閽叡鐢ㄥ悓涓€濂楅€昏緫銆?
 def submit_action_input() -> None:
     prompt = str(st.session_state.get("action_input_value", "")).strip()
     if not prompt:
@@ -1629,14 +1384,14 @@ def render_input_panel() -> None:
 
 
 def render_dialogue_workspace() -> None:
-    weights = [1.0, 4.55] if st.session_state.story_log_open else [0.74, 4.78]
-    log_col, input_col = st.columns(weights, gap="small", vertical_alignment="center")
+    st.markdown("### 行动输入")
+    render_input_panel()
+    st.caption("可直接输入自然语言行动，例如：去东边看看、我去茅庐外。")
 
-    with log_col:
-        render_story_log_toggle()
-
-    with input_col:
-        render_input_panel()
+    with st.expander("剧情记录", expanded=False):
+        st.markdown("<div class='feed-shell'>", unsafe_allow_html=True)
+        render_feed_panel(show_title=False, height=380)
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 # 宸︿晶渚ц竟鏍忓彧淇濈暀蹇呰鎺у埗椤广€?
@@ -1692,74 +1447,56 @@ def render_sidebar() -> None:
                 st.error(f"保存失败：{save_name}")
 
         st.markdown("---")
-        st.checkbox("启用AI背景图", key="background_enabled")
-        st.checkbox("回合后自动更新背景图", key="background_auto_update")
+        st.checkbox("启用AI背景图", key="background_enabled", on_change=on_background_enabled_toggle)
+        st.checkbox(
+            "回合后自动更新背景图",
+            key="background_auto_update",
+            disabled=not bool(st.session_state.get("background_enabled", False)),
+        )
 
         bg_col1, bg_col2 = st.columns(2)
-        if bg_col1.button("刷新背景", use_container_width=True):
+        if bg_col1.button(
+            "刷新背景",
+            use_container_width=True,
+            disabled=not bool(st.session_state.get("background_enabled", False)),
+        ):
             seed = latest_stage_dialogue("").get("content", "")
-            refresh_background_image(force=True, story_text=seed)
+            refresh_background_image(force=True, story_text=seed, ignore_enabled=False)
             st.rerun()
         if bg_col2.button("清除背景", use_container_width=True):
             clear_background_image()
             st.rerun()
-        if not st.session_state.get("background_auto_update", False):
+        if not st.session_state.get("background_enabled", False):
+            st.caption("AI 背景图已关闭，当前始终使用本地默认背景。")
+        elif not st.session_state.get("background_auto_update", False):
             st.caption("已启用极速模式：背景图仅在你点击“刷新背景”时更新。")
+        if st.session_state.get("background_status"):
+            st.caption(str(st.session_state.get("background_status")))
+        if st.session_state.get("background_error"):
+            st.error(str(st.session_state.get("background_error")))
 
         st.markdown("---")
-        render_game_info_toggle()
+        with st.expander("系统状态与命令", expanded=False):
+            render_right_sidebar(show_title=False, bordered=False)
 
 
 def main() -> None:
     ensure_session()
     inject_styles(
-        (
-            st.session_state.get("background_image_uri")
-            if st.session_state.get("background_enabled", True)
-            else None
-        ),
+        st.session_state.get("background_image_uri"),
         st.session_state.get("background_aspect_ratio", "3 / 2"),
     )
     render_sidebar()
 
     engine = st.session_state.engine
     render_header()
-    render_main_scene_panel()
     render_dialogue_workspace()
 
     if engine.is_game_over():
         st.warning("游戏已经结束。你可以读取存档或重新开始新游戏。")
 
-    if st.session_state.story_log_open:
-        render_story_log_dialog()
-    if st.session_state.right_sidebar_open:
-        render_game_info_dialog()
+    # Dialog-style overlays are intentionally disabled in the simplified layout.
 
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

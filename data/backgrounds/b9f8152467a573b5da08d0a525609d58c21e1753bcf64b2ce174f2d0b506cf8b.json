@@ -1,0 +1,11 @@
+{
+  "scene_name": "图书馆主厅",
+  "scene_description": "一间宽敞而古老的大厅，四周摆满高耗的书架，书脉上覆盖着厚厚灰尘。中央是一张巨大的橘木阅读桌，桌上点着一盆梅油灯。",
+  "source_text": "调查仍在继续。\n在场角色：馆藏管理员\n可见物品：破旧的书, 碟油灯, 泛黄纸条\n可用出口：北通往通往走廊的木门",
+  "world_name": "mysterious_library",
+  "prompt": "为文字冒险游戏生成一张无文字背景图。\n画幅比例必须是 3:2 横向。\n要求：电影感、环境叙事、光影层次、氛围压抑或神秘。\n禁止：任何可读文字、水印、边框、UI元素。\n请做可铺满页面的完整构图，不要留白。\n世界：mysterious_library\n当前场景：图书馆主厅\n场景描述：一间宽敞而古老的大厅，四周摆满高耗的书架，书脉上覆盖着厚厚灰尘。中央是一张巨大的橘木阅读桌，桌上点着一盆梅油灯。\n本轮叙事要点：调查仍在继续。\n在场角色：馆藏管理员\n可见物品：破旧的书, 碟油灯, 泛黄纸条\n可用出口：北通往通往走廊的木门\n风格关键词：atmospheric, cinematic lighting, environmental storytelling",
+  "model": "qwen-image",
+  "size": "1536x1024",
+  "fallback": true,
+  "fallback_reason": "Error code: 404"
+}

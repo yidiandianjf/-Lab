@@ -13,6 +13,14 @@
   "npc_response_mode": "unified",
   "npc_director_use_llm": true,
   "narrative_merge_use_llm": true,
-  "end_condition": "故事不会结局",
-  "entry_scene_narrative": "轿子在荣国府前缓缓停下。石狮森然，门庭赫奕，几个婆子和丫鬟早已迎候在侧。你捏着素白手帕，想起母亲生前的叮嘱，只觉步步都要留心，句话都要斟酌。"
+  "end_condition": "故事不会结束。",
+  "entry_scene_narrative": "轿子在荣国府前停下。你收敛心神，随丫鬟入府，准备拜见贾母。",
+  "backgrounds": {
+    "default_image": "data/local_backgrounds/daiyu_gate.png",
+    "scene_images": {
+      "map-gate-01": "data/local_backgrounds/daiyu_gate.png",
+      "map-entrance-01": "data/local_backgrounds/daiyu_chuihua_gate.png",
+      "map-jiamu-room-01": "data/local_backgrounds/daiyu_jiamu_room.png"
+    }
+  }
 }
