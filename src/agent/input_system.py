@@ -38,6 +38,7 @@ class InputResult:
     direct_response: Optional[str] = None  # ??????????????
     changes: Optional[List[StateChange]] = None  # ??????
     engine_action: Optional[Dict[str, Any]] = None  # ??????????????
+    frontend_payload: Optional[Dict[str, Any]] = None  # ????????/UI???
 
 
 class InputSystem:
@@ -83,6 +84,23 @@ class InputSystem:
         self.screener = screener or InputScreener()
         logger.info("Input系统初始化完成")
 
+    @staticmethod
+    def _friendly_safety_hint(category: str = "") -> str:
+        mapping = {
+            "system_operation": "请描述游戏内动作，不要包含系统命令、文件或环境操作。",
+            "prompt_injection": "请改用正常的角色行动描述，不要尝试修改系统规则。",
+            "system_leak": "请聚焦剧情行动，不要请求系统提示词或内部信息。",
+            "abuse": "请使用中性、礼貌的表达后再试一次。",
+            "obscene": "请改为文明表达，避免低俗词汇。",
+            "sexual_content": "请改为符合课堂或教学场景的描述。",
+            "violence": "请改为非暴力的行动表达。",
+            "gore": "请避免血腥描写，改为更温和的表达。",
+            "self_harm": "请改为安全、积极的表达。",
+            "politics_sensitive": "请聚焦游戏内剧情内容，避免现实敏感政治话题。",
+            "advertising": "请不要包含推广、引流或联系方式内容。",
+        }
+        return mapping.get(str(category or "").strip().lower(), "请换一种中性、简洁的表达后重试。")
+
     def _summarize_text(self, text: str, limit: int = 60) -> str:
         """Summarize text safely to avoid displaying half-sentence fragments."""
         normalized = " ".join((text or "").replace("\n", "；").split())
@@ -93,7 +111,7 @@ class InputSystem:
         best_punct = max(cut.rfind("。"), cut.rfind("；"), cut.rfind("！"), cut.rfind("？"))
         if best_punct >= int(limit * 0.6):
             return cut[: best_punct + 1]
-        logger.info("Input系统初始化完成")
+        return cut.rstrip() + "..."
 
     @staticmethod
     def _player_scene(player: Optional[Character]) -> str:
@@ -151,11 +169,25 @@ class InputSystem:
                 direct_response="请输入内容。"
             )
 
-        def _blocked_response(reason: str) -> InputResult:
+        def _blocked_response(reason: str, screen_detail: Optional[Dict[str, Any]] = None) -> InputResult:
             logger.warning("输入被拦截: %s", reason)
+            category = ""
+            if isinstance(screen_detail, dict):
+                category = str(screen_detail.get("category", "")).strip().lower()
+
+            user_message = "输入触发安全拦截，请改写后重试。"
+            payload: Dict[str, Any] = {
+                "type": "safety_block",
+                "user_message": user_message,
+                "hint": self._friendly_safety_hint(category),
+            }
+            if category:
+                payload["category"] = category
+
             return InputResult(
                 input_type=InputType.BASIC_COMMAND,
-                direct_response="您的输入未通过安全检查，请修改后重试。"
+                direct_response=user_message,
+                frontend_payload=payload,
             )
 
         # ???/?????????????????? AI ??????
@@ -174,7 +206,8 @@ class InputSystem:
             context={"channel": "natural_language", "bypass_ai": False}
         )
         if screen_result.is_blocked:
-            return _blocked_response(screen_result.reason)
+            detail = screen_result.detail if isinstance(screen_result.detail, dict) else None
+            return _blocked_response(screen_result.reason, screen_detail=detail)
 
         return InputResult(
             input_type=InputType.NATURAL_LANGUAGE,

@@ -9,7 +9,7 @@ LLM服务模块 - 封装OpenAI兼容API调用
 - 完整的错误处理和降级策略
 
 环境变量配置：
-- LLM_API_KEY: sk-xxxxxxxxxxxxxxxx
+- LLM_API_KEY: sk-c8ce7db131914189b362c6a07b4225e8
 - LLM_BASE_URL: https://dashscope.aliyuncs.com/compatible-mode/v1
 - LLM_MODEL: qwen3.5-122b-a10b
 """

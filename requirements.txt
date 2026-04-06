@@ -1,6 +1,9 @@
 # LLM client
 openai>=1.0.0
 
+# Frontend
+streamlit>=1.34.0
+
 # Data validation
 pydantic>=2.0.0
 
@@ -9,3 +12,6 @@ sqlalchemy>=2.0.0
 
 # YAML config support
 PyYAML>=6.0.0
+
+# TLS CA bundle helper used by background image service
+certifi>=2024.0.0

@@ -515,7 +515,8 @@ class GameEngine:
             "check_result": None,
             "narrative": None,
             "success": True,
-            "game_over": False
+            "game_over": False,
+            "frontend_payload": None,
         }
         
         # DebugLogger: 记录回合开始
@@ -556,6 +557,8 @@ class GameEngine:
                         input_result.args or [],
                         self.game_state
                     )
+                    if getattr(cmd_result, "frontend_payload", None):
+                        result["frontend_payload"] = cmd_result.frontend_payload
 
                     # 处理需要引擎执行的系统命令
                     if input_result.command == "save":
@@ -605,6 +608,8 @@ class GameEngine:
                     return result
                 else:
                     result["response"] = input_result.direct_response or "未知指令"
+                    if getattr(input_result, "frontend_payload", None):
+                        result["frontend_payload"] = input_result.frontend_payload
                     return result
 
             # 自然语言输入，继续DM Agent处理
@@ -3480,4 +3485,3 @@ if __name__ == "__main__":
     # 简单测试
     engine = create_game_engine()
     print("GameEngine模块测试完成")
-

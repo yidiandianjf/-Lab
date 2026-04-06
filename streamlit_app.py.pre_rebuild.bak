@@ -1,0 +1,1631 @@
+﻿from __future__ import annotations
+
+import html
+import logging
+import re
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import streamlit as st
+
+
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.main import initialize_game
+try:
+    from src.utils.background_image_service import BackgroundImageService, BackgroundImageConfigError
+    _BACKGROUND_IMPORT_ERROR: str | None = None
+except Exception as exc:  # pragma: no cover - optional dependency path
+    BackgroundImageService = None  # type: ignore[assignment]
+
+    class BackgroundImageConfigError(Exception):
+        pass
+
+    _BACKGROUND_IMPORT_ERROR = str(exc)
+
+
+APP_TITLE = "COC 璋冩煡妗ｆ瀹?
+DEFAULT_WORLD = "mysterious_library"
+DEFAULT_SAVE = "auto_save"
+WORLD_ROOT = ROOT / "config" / "world"
+DEFAULT_DB = ROOT / "data" / "game.db"
+SAVE_ROOT = ROOT / "data" / "saves"
+BACKGROUND_CACHE_DIR = ROOT / "data" / "backgrounds"
+
+WORLD_LABELS = {
+    "mysterious_library": "COC",
+    "daiyu_enters_jia": "鏋楅粵鐜?,
+    "sanguo_mao_lu": "涓夐【鑼呭簮",
+}
+ALLOWED_WORLDS = ["mysterious_library", "daiyu_enters_jia", "sanguo_mao_lu"]
+
+_BACKGROUND_SERVICE: Any = None
+_BACKGROUND_SERVICE_ERROR: str | None = None
+
+
+st.set_page_config(
+    page_title=APP_TITLE,
+    layout="wide",
+)
+
+
+# 璇诲彇鍙敤涓栫晫鐩綍锛屼緵渚ц竟鏍忎笅鎷夋閫夋嫨銆?def list_worlds() -> list[str]:
+    existing = {path.name for path in WORLD_ROOT.iterdir() if path.is_dir()} if WORLD_ROOT.exists() else set()
+    worlds = [world for world in ALLOWED_WORLDS if world in existing]
+    return worlds or ([DEFAULT_WORLD] if DEFAULT_WORLD in existing else list(ALLOWED_WORLDS))
+
+
+def world_label(world: str) -> str:
+    return WORLD_LABELS.get(world, world)
+
+
+def list_saves() -> list[str]:
+    if not SAVE_ROOT.exists():
+        return []
+    saves = [path.stem for path in SAVE_ROOT.glob("*.json") if path.is_file()]
+    return sorted(set(saves))
+
+
+# 澶嶇敤 CLI 鍚姩鍙傛暟缁撴瀯锛岃 Streamlit 浠嶈蛋鍘熸湁鍒濆鍖栭摼璺€?def build_args(world: str, load_name: str | None = None) -> SimpleNamespace:
+    return SimpleNamespace(
+        db=str(DEFAULT_DB),
+        mode="sqlite",
+        load=load_name,
+        world=world,
+        name=None,
+    )
+
+
+# 鐩存帴璋冪敤鍘熼」鐩殑 initialize_game锛岃€屼笉鏄湪鍓嶇閲嶅瀹炵幇寮曟搸鍒涘缓閫昏緫銆?def create_engine(world: str, load_name: str | None = None):
+    logging.getLogger().setLevel(logging.INFO)
+    return initialize_game(build_args(world=world, load_name=load_name))
+
+
+# 姣忔鏂板紑灞€鎴栬妗ｆ椂锛岄噸寤哄紩鎿庡苟鍒锋柊褰撳墠浼氳瘽鐘舵€併€?def bootstrap_session(world: str, load_name: str | None = None) -> None:
+    engine = create_engine(world=world, load_name=load_name)
+    state = engine.get_game_state()
+    scene = state.get_current_map()
+    opening = (
+        f"浼氳瘽宸插氨缁€傚綋鍓嶄笘鐣岋細{world}銆?
+        if load_name
+        else f"鏂版父鎴忓凡寮€濮嬨€傚綋鍓嶄笘鐣岋細{world}銆?
+    )
+    if scene:
+        opening += f" 浣犵幇鍦ㄤ綅浜庛€妠scene.name}銆嬨€?
+
+    st.session_state.engine = engine
+    st.session_state.feed = [
+        {
+            "role": "assistant",
+            "kind": "system",
+            "content": opening,
+        }
+    ]
+    st.session_state.last_check = None
+    st.session_state.selected_world = world
+    # 閬垮厤涓?widget key 鍐茬獊锛屼娇鐢ㄤ笉鍚岀殑鍐呴儴 key
+    st.session_state._save_name = load_name or DEFAULT_SAVE
+    st.session_state.background_image_uri = None
+    st.session_state.background_image_path = None
+    st.session_state.background_prompt = ""
+    st.session_state.background_source_signature = ""
+    st.session_state.background_source_text = ""
+    st.session_state.background_status = "绛夊緟鐢熸垚棣栧紶鑳屾櫙鍥俱€?
+    st.session_state.background_error = ""
+    st.session_state.background_manual_clear = False
+    st.session_state.background_aspect_ratio = "3 / 2"
+    st.session_state.right_sidebar_open = False
+    st.session_state.turn_in_progress = False
+    st.session_state.last_turn_input = ""
+    st.session_state.last_turn_marker = None
+
+    if st.session_state.get("background_enabled", True):
+        refresh_background_image(force=False, story_text="")
+
+
+# Streamlit 姣忔浜や簰閮戒細閲嶈窇鑴氭湰锛屾墍浠ラ渶瑕佺敤 session_state 淇濆瓨浼氳瘽涓殑寮曟搸鍜屽睍绀烘暟鎹€?def ensure_session() -> None:
+    if "engine" not in st.session_state:
+        bootstrap_session(DEFAULT_WORLD)
+    if "selected_world" not in st.session_state:
+        st.session_state.selected_world = DEFAULT_WORLD
+    if "_save_name" not in st.session_state:
+        st.session_state._save_name = DEFAULT_SAVE
+    if "feed" not in st.session_state:
+        st.session_state.feed = []
+    if "last_check" not in st.session_state:
+        st.session_state.last_check = None
+    st.session_state.background_enabled = True
+    st.session_state.background_auto_update = True
+    if "background_image_uri" not in st.session_state:
+        st.session_state.background_image_uri = None
+    if "background_image_path" not in st.session_state:
+        st.session_state.background_image_path = None
+    if "background_prompt" not in st.session_state:
+        st.session_state.background_prompt = ""
+    if "background_status" not in st.session_state:
+        st.session_state.background_status = "绛夊緟鐢熸垚棣栧紶鑳屾櫙鍥俱€?
+    if "background_error" not in st.session_state:
+        st.session_state.background_error = ""
+    if "background_source_signature" not in st.session_state:
+        st.session_state.background_source_signature = ""
+    if "background_source_text" not in st.session_state:
+        st.session_state.background_source_text = ""
+    if "background_manual_clear" not in st.session_state:
+        st.session_state.background_manual_clear = False
+    if "background_aspect_ratio" not in st.session_state:
+        st.session_state.background_aspect_ratio = "3 / 2"
+    if "right_sidebar_open" not in st.session_state:
+        st.session_state.right_sidebar_open = False
+    if "story_log_open" not in st.session_state:
+        st.session_state.story_log_open = False
+    if "action_input_value" not in st.session_state:
+        st.session_state.action_input_value = ""
+    if "turn_in_progress" not in st.session_state:
+        st.session_state.turn_in_progress = False
+    if "last_turn_input" not in st.session_state:
+        st.session_state.last_turn_input = ""
+    if "last_turn_marker" not in st.session_state:
+        st.session_state.last_turn_marker = None
+    # Reset stale lock on rerun; per-turn de-dup still uses input+turn marker.
+    st.session_state.turn_in_progress = False
+
+    if (
+        st.session_state.background_enabled
+        and not st.session_state.background_image_uri
+        and not st.session_state.background_manual_clear
+        and not st.session_state.background_error
+    ):
+        refresh_background_image(force=False, story_text="")
+
+
+def startup_warnings() -> list[str]:
+    warnings: list[str] = []
+    if _BACKGROUND_IMPORT_ERROR:
+        warnings.append(f"鑳屾櫙鍥炬ā鍧楁湭鎴愬姛鍔犺浇锛屽凡鑷姩闄嶇骇銆傚師鍥狅細{_BACKGROUND_IMPORT_ERROR}")
+    if not DEFAULT_DB.exists():
+        warnings.append(f"榛樿鏁版嵁搴撲笉瀛樺湪锛歿DEFAULT_DB}")
+    return warnings
+
+
+def get_runtime_control_status() -> dict[str, str]:
+    engine = st.session_state.engine
+    ai_status_text = "鏈煡"
+    speed_mode_text = "鏈煡"
+
+    if hasattr(engine, "get_ai_screening_status"):
+        try:
+            ai_status = engine.get_ai_screening_status() or {}
+            enabled_text = "寮€鍚? if ai_status.get("enabled") else "鍏抽棴"
+            configured_text = "宸查厤缃? if ai_status.get("configured") else "鏈厤缃?
+            available_text = "鍙敤" if ai_status.get("available") else "涓嶅彲鐢?
+            ai_status_text = f"{enabled_text}锛坽configured_text}/{available_text}锛?
+        except Exception:
+            ai_status_text = "鑾峰彇澶辫触"
+
+    if hasattr(engine, "get_speed_mode"):
+        try:
+            speed_mode_text = str(engine.get_speed_mode() or "unknown")
+        except Exception:
+            speed_mode_text = "鑾峰彇澶辫触"
+
+    return {
+        "ai_screening": ai_status_text,
+        "speed_mode": speed_mode_text,
+    }
+
+
+def format_text(text: str) -> str:
+    return html.escape(text or "").replace("\n", "<br>")
+
+
+def sanitize_display_text(text: Any) -> str:
+    """Remove code-like fragments so main window only shows readable prose."""
+    raw = str(text or "")
+    # Drop fenced code blocks entirely.
+    sanitized = re.sub(r"```[\s\S]*?```", "", raw)
+    # Remove inline code markers.
+    sanitized = re.sub(r"`([^`]*)`", r"\1", sanitized)
+    sanitized = re.sub(r"\n{3,}", "\n\n", sanitized).strip()
+    return sanitized or "锛堟棤鍙樉绀烘枃鏈級"
+
+
+def summarize(text: str, limit: int = 90) -> str:
+    normalized = " ".join((text or "").replace("\n", "锛?).split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 3].rstrip() + "..."
+
+
+def get_background_service() -> BackgroundImageService | None:
+    global _BACKGROUND_SERVICE, _BACKGROUND_SERVICE_ERROR
+    if BackgroundImageService is None:
+        _BACKGROUND_SERVICE_ERROR = _BACKGROUND_IMPORT_ERROR or "鑳屾櫙鍥炬ā鍧椾笉鍙敤銆?
+        _BACKGROUND_SERVICE = None
+        return None
+    try:
+        _BACKGROUND_SERVICE = BackgroundImageService(
+            config_path=str(ROOT / "config" / "llm.json"),
+            cache_dir=BACKGROUND_CACHE_DIR,
+        )
+        _BACKGROUND_SERVICE_ERROR = None
+        return _BACKGROUND_SERVICE
+    except (BackgroundImageConfigError, ImportError) as exc:
+        _BACKGROUND_SERVICE_ERROR = str(exc)
+        _BACKGROUND_SERVICE = None
+        return None
+    except Exception as exc:  # pragma: no cover - defensive path
+        _BACKGROUND_SERVICE_ERROR = f"鍥剧墖鏈嶅姟鍒濆鍖栧け璐? {exc}"
+        _BACKGROUND_SERVICE = None
+        return None
+
+
+# 缁熶竴鎶婅鍒欑郴缁熻繑鍥炵殑妫€瀹氱粨鏋滄暣鐞嗘垚鍓嶇鍙洿鎺ュ睍绀虹殑瀛楀吀缁撴瀯銆?def normalize_check_result(check_result: Any) -> dict[str, Any] | None:
+    if not check_result:
+        return None
+
+    if hasattr(check_result, "model_dump"):
+        data = check_result.model_dump()
+    elif isinstance(check_result, dict):
+        data = dict(check_result)
+    else:
+        data = {
+            "result": getattr(check_result, "result", ""),
+            "dice_roll": getattr(check_result, "dice_roll", None),
+            "target_value": getattr(check_result, "target_value", None),
+            "actor_value": getattr(check_result, "actor_value", None),
+            "detail": getattr(check_result, "detail", ""),
+        }
+
+    result_value = data.get("result", "")
+    if hasattr(result_value, "value"):
+        result_value = result_value.value
+    result_text = str(result_value or "鏈煡")
+    if "." in result_text:
+        result_text = result_text.split(".")[-1]
+    alias = {
+        "CRITICAL_SUCCESS": "澶ф垚鍔?,
+        "SUCCESS": "鎴愬姛",
+        "FAILURE": "澶辫触",
+        "FUMBLE": "澶уけ璐?,
+    }
+    result_text = alias.get(result_text, result_text)
+    data["result_text"] = result_text
+    data["result_class"] = {
+        "澶ф垚鍔?: "critical",
+        "鎴愬姛": "success",
+        "澶辫触": "failure",
+        "澶уけ璐?: "fumble",
+    }.get(result_text, "neutral")
+    return data
+
+
+def render_chips(values: list[str], empty_text: str = "鏆傛棤") -> None:
+    if not values:
+        st.caption(empty_text)
+        return
+    chips = "".join(f'<span class="artifact-chip">{html.escape(value)}</span>' for value in values)
+    st.markdown(f'<div class="artifact-chip-row">{chips}</div>', unsafe_allow_html=True)
+
+
+def render_fact_grid(items: list[tuple[str, str]]) -> None:
+    cards = "".join(
+        (
+            '<div class="fact-card">'
+            f'<span class="fact-label">{html.escape(label)}</span>'
+            f'<span class="fact-value">{html.escape(value)}</span>'
+            "</div>"
+        )
+        for label, value in items
+    )
+    st.markdown(f'<div class="fact-grid">{cards}</div>', unsafe_allow_html=True)
+
+
+# 浠庡綋鍓嶅紩鎿庨噷鎻愬彇鈥滈〉闈㈢湡姝ｅ叧蹇冪殑鏁版嵁鈥濓紝閬垮厤娓叉煋鍑芥暟鍒板鐩存帴璁块棶搴曞眰鐘舵€併€?def visible_scene_data():
+    engine = st.session_state.engine
+    state = engine.get_game_state()
+    player = state.get_player()
+    scene = state.get_current_map()
+
+    item_names: list[str] = []
+    npc_names: list[str] = []
+    exits: list[dict[str, str]] = []
+    inventory_names: list[str] = []
+
+    if player:
+        for item_id in player.inventory:
+            item = state.items.get(item_id)
+            if item:
+                inventory_names.append(item.name)
+
+    if scene:
+        for neighbor in scene.neighbors:
+            exits.append(
+                {
+                    "direction": neighbor.direction,
+                    "target_id": neighbor.id,
+                    "description": neighbor.description,
+                }
+            )
+
+        for item_id in scene.entities.items:
+            item = state.items.get(item_id)
+            if item:
+                item_names.append(item.name)
+
+        for char_id in scene.entities.characters:
+            if player and char_id == player.id:
+                continue
+            char = state.characters.get(char_id)
+            if char:
+                npc_names.append(char.name)
+
+    return state, player, scene, inventory_names, item_names, npc_names, exits
+
+
+def resolve_background_context(story_text: str) -> dict[str, str]:
+    _, _, scene, _, item_names, npc_names, exits = visible_scene_data()
+
+    scene_name = scene.name if scene else "鏈繘鍏ュ満鏅?
+    scene_description = scene.description.get_public_text() if scene else ""
+
+    details = []
+    if npc_names:
+        details.append(f"鍦ㄥ満瑙掕壊锛歿'銆?.join(npc_names)}")
+    if item_names:
+        details.append(f"鍙鐗╁搧锛歿'銆?.join(item_names)}")
+    if exits:
+        exit_summary = "銆?.join(
+            f"{exit_item['direction']}閫氬線{exit_item['description'] or exit_item['target_id']}"
+            for exit_item in exits
+        )
+        details.append(f"鍙敤鍑哄彛锛歿exit_summary}")
+
+    source_text = (story_text or "").strip()
+    if details:
+        source_text = "\n".join([part for part in [source_text, *details] if part])
+    if not source_text:
+        source_text = scene_description or scene_name
+
+    return {
+        "scene_name": scene_name,
+        "scene_description": scene_description,
+        "source_text": source_text,
+        "world_name": st.session_state.get("selected_world", DEFAULT_WORLD),
+    }
+
+
+def refresh_background_image(force: bool = False, story_text: str = "") -> None:
+    if not st.session_state.get("background_enabled", True):
+        return
+
+    service = get_background_service()
+    if service is None:
+        st.session_state.background_error = _BACKGROUND_SERVICE_ERROR or "褰撳墠鏈厤缃彲鐢ㄧ殑鍥剧墖鐢熸垚鏈嶅姟銆?
+        st.session_state.background_status = "AI 鑳屾櫙鍥句笉鍙敤锛屽凡淇濈暀榛樿鑳屾櫙銆?
+        return
+    st.session_state.background_aspect_ratio = service.aspect_ratio_css()
+
+    context = resolve_background_context(story_text)
+    signature = service.build_source_signature(**context)
+    if (
+        not force
+        and signature == st.session_state.get("background_source_signature", "")
+        and st.session_state.get("background_image_uri")
+    ):
+        return
+
+    with st.spinner("姝ｅ湪鏍规嵁褰撳墠鍙欎簨鐢熸垚鑳屾櫙鍥?.."):
+        try:
+            generated = service.generate_background(force=force, **context)
+        except Exception as exc:
+            st.session_state.background_error = f"鑳屾櫙鍥剧敓鎴愬け璐ワ細{exc}"
+            st.session_state.background_status = "AI 鑳屾櫙鍥剧敓鎴愬け璐ワ紝宸蹭繚鐣欎笂涓€娆¤儗鏅€?
+            return
+
+    st.session_state.background_image_path = generated["path"]
+    st.session_state.background_image_uri = service.build_data_uri(generated["path"])
+    st.session_state.background_prompt = generated["prompt"]
+    st.session_state.background_source_signature = signature
+    st.session_state.background_source_text = context["source_text"]
+    st.session_state.background_manual_clear = False
+    st.session_state.background_error = ""
+    st.session_state.background_status = (
+        "鑳屾櫙鍥惧凡浠庢湰鍦扮紦瀛樻仮澶嶃€?
+        if generated.get("cache_hit")
+        else "鑳屾櫙鍥惧凡鏍规嵁鏈€鏂板彊浜嬫洿鏂般€?
+    )
+
+
+def clear_background_image() -> None:
+    st.session_state.background_image_uri = None
+    st.session_state.background_image_path = None
+    st.session_state.background_prompt = ""
+    st.session_state.background_source_signature = ""
+    st.session_state.background_source_text = ""
+    st.session_state.background_manual_clear = True
+    st.session_state.background_status = "宸叉竻闄ゅ綋鍓嶈儗鏅浘锛屽皢鍥為€€鍒伴粯璁ゆ皼鍥村簳鍥俱€?
+    st.session_state.background_error = ""
+
+
+# 鍙欎簨娴佹槸椤甸潰涓婄殑鈥滆亰澶╄褰曗€濓紝鐢ㄤ簬淇濈暀鐜╁杈撳叆銆佺郴缁熷洖搴斻€侀壌瀹氱粨鏋滃拰缁撳眬鎻愮ず銆?def add_feed(role: str, content: str, kind: str = "text", extra: dict[str, Any] | None = None) -> None:
+    if not content:
+        return
+    safe_content = sanitize_display_text(content) if role == "assistant" else str(content)
+    message = {
+        "role": role,
+        "content": safe_content,
+        "kind": kind,
+    }
+    if extra:
+        message["extra"] = extra
+    st.session_state.feed.append(message)
+
+
+def normalize_turn_result(raw_result: Any) -> dict[str, Any]:
+    if raw_result is None:
+        return {}
+    if isinstance(raw_result, dict):
+        return raw_result
+    if hasattr(raw_result, "model_dump"):
+        try:
+            dumped = raw_result.model_dump()
+            return dumped if isinstance(dumped, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+# 澶勭悊涓€涓畬鏁寸敤鎴峰洖鍚堬細鍐欏叆杈撳叆 -> 璋冨紩鎿?-> 杩藉姞 response/check/narrative 鍒伴〉闈㈡秷鎭祦銆?def handle_turn(user_input: str, display_input: str | None = None) -> None:
+    engine = st.session_state.engine
+    text = (user_input or "").strip()
+    if not text:
+        return
+
+    if st.session_state.get("turn_in_progress", False):
+        return
+
+    turn_marker = None
+    try:
+        turn_marker = getattr(engine.get_game_state(), "turn_count", None)
+    except Exception:
+        turn_marker = None
+
+    if (
+        text == st.session_state.get("last_turn_input", "")
+        and turn_marker is not None
+        and turn_marker == st.session_state.get("last_turn_marker")
+    ):
+        return
+
+    st.session_state.turn_in_progress = True
+    st.session_state.last_turn_input = text
+    st.session_state.last_turn_marker = turn_marker
+
+    add_feed("user", display_input or text)
+
+    try:
+        raw_result = engine.process_input(text)
+    except Exception as exc:
+        add_feed("assistant", f"澶勭悊杈撳叆鏃跺彂鐢熼敊璇細{exc}", kind="error")
+        return
+
+    result = normalize_turn_result(raw_result)
+    if not result:
+        add_feed("assistant", "寮曟搸娌℃湁杩斿洖缁撴灉銆?, kind="error")
+        return
+
+    security_payload = result.get("frontend_payload") if isinstance(result.get("frontend_payload"), dict) else None
+    is_security_block = bool(security_payload and security_payload.get("type") == "safety_block")
+
+    if is_security_block:
+        message = str(security_payload.get("user_message") or result.get("response") or "杈撳叆瑙﹀彂瀹夊叏鎷︽埅銆?)
+        extra = {}
+        hint = security_payload.get("hint")
+        if hint:
+            extra["hint"] = str(hint)
+        add_feed("assistant", message, kind="security", extra=extra or None)
+    elif result.get("response"):
+        add_feed("assistant", str(result["response"]))
+
+    check_data = normalize_check_result(result.get("check_result"))
+    if check_data:
+        st.session_state.last_check = check_data
+        summary = (
+            f"閴村畾缁撴灉锛歿check_data['result_text']}锝?
+            f"d100={check_data.get('dice_roll', '-')}"
+            f" / 鐩爣鍊?{check_data.get('target_value', '-')}"
+        )
+        add_feed("assistant", summary, kind="check", extra=check_data)
+
+    if result.get("narrative"):
+        add_feed("assistant", str(result["narrative"]), kind="narrative")
+
+    if not result.get("success", True) and not is_security_block:
+        add_feed("assistant", "鏈洖鍚堟湭鎴愬姛瀹屾垚銆?, kind="error")
+
+    if result.get("game_over"):
+        ending_text = ""
+        if hasattr(engine, "get_ending_text"):
+            ending_text = engine.get_ending_text() or ""
+        if ending_text:
+            add_feed("assistant", ending_text, kind="ending")
+
+    if st.session_state.get("background_enabled") and st.session_state.get("background_auto_update", True):
+        story_seed = str(result.get("narrative") or result.get("response") or "").strip()
+        refresh_background_image(force=False, story_text=story_seed)
+
+    st.session_state.turn_in_progress = False
+
+
+def latest_stage_dialogue(scene_description: str) -> dict[str, str]:
+    label_map = {
+        "narrative": "瀹堢浜哄彊浜?,
+        "text": "褰撳墠鍥炲簲",
+        "check": "妫€瀹氬弽棣?,
+        "ending": "缁撳眬鎾姤",
+        "error": "绯荤粺鎻愮ず",
+    }
+    label_map["security"] = "瀹夊叏鎻愮ず"
+    for message in reversed(st.session_state.feed):
+        if message.get("role") != "assistant":
+            continue
+        kind = message.get("kind", "text")
+        if kind == "system":
+            continue
+        content = str(message.get("content") or "").strip()
+        if not content:
+            continue
+        return {
+            "speaker": label_map.get(kind, "褰撳墠鍥炲簲"),
+            "content": content,
+        }
+    return {
+        "speaker": "鍦烘櫙鎻愮ず",
+        "content": scene_description or "璋冩煡浠嶅湪缁х画銆?,
+    }
+
+
+# 娉ㄥ叆灏戦噺鑷畾涔?CSS锛屾妸榛樿 Streamlit 椤甸潰璋冩暣鎴愭洿閫傚悎鍙欎簨娓告垙灞曠ず鐨勬牱寮忋€?def inject_styles(background_image_uri: str | None = None, background_aspect_ratio: str = "3 / 2") -> None:
+    _ = background_image_uri
+    style_block = """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=Source+Sans+3:wght@400;500;600&display=swap');
+
+        html, body, [class*="css"]  {
+            font-family: "Source Sans 3", "Noto Sans SC", sans-serif;
+        }
+
+        h1, h2, h3 {
+            font-family: "Cormorant Garamond", "STSong", serif !important;
+            letter-spacing: 0.02em;
+        }
+
+        .stApp {
+            background:
+                linear-gradient(180deg, rgba(247, 241, 231, 0.96), rgba(240, 232, 220, 0.98)),
+                radial-gradient(circle at top left, rgba(147, 95, 54, 0.10), transparent 28%),
+                radial-gradient(circle at top right, rgba(65, 92, 79, 0.09), transparent 24%);
+        }
+
+        .main .block-container {
+            max-width: 1520px;
+            padding-top: 1.55rem;
+            padding-bottom: 2.5rem;
+            padding-left: 1rem;
+            padding-right: 0.02rem;
+        }
+
+        .panel-card,
+        .history-card,
+        .input-card,
+        .rail-card,
+        .check-card {
+            border: 1px solid rgba(69, 48, 34, 0.18);
+            border-radius: 18px;
+            padding: 1rem 1.15rem;
+            background: rgba(255, 250, 244, 0.84);
+            box-shadow: 0 18px 40px rgba(59, 39, 26, 0.08);
+        }
+
+        .stage-shell {
+            position: relative;
+            overflow: hidden;
+            aspect-ratio: __BG_ASPECT_RATIO__;
+            border-radius: 28px;
+            border: 1px solid rgba(69, 48, 34, 0.22);
+            box-shadow: 0 28px 60px rgba(50, 34, 23, 0.18);
+            background: linear-gradient(135deg, rgba(60, 42, 29, 0.96), rgba(28, 20, 14, 0.96));
+        }
+
+        .stage-visual {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            background:
+                radial-gradient(circle at top, rgba(255, 244, 224, 0.16), transparent 36%),
+                linear-gradient(180deg, rgba(26, 19, 13, 0.1), rgba(18, 13, 9, 0.55));
+        }
+
+        .stage-visual img {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            display: block;
+            object-fit: cover;
+            object-position: center center;
+            filter: saturate(1.03) contrast(1.02);
+        }
+
+        .stage-placeholder {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            padding: 2.3rem;
+            color: #f4e8da;
+            background:
+                radial-gradient(circle at top, rgba(255, 224, 187, 0.20), transparent 34%),
+                linear-gradient(135deg, rgba(119, 78, 46, 0.92), rgba(45, 32, 22, 0.98));
+        }
+
+        .stage-scrim {
+            position: absolute;
+            inset: 0;
+            background:
+                linear-gradient(180deg, rgba(19, 13, 9, 0.18) 0%, rgba(19, 13, 9, 0.04) 32%, rgba(19, 13, 9, 0.58) 100%),
+                linear-gradient(90deg, rgba(19, 13, 9, 0.22), rgba(19, 13, 9, 0) 42%, rgba(19, 13, 9, 0.14) 100%);
+            pointer-events: none;
+        }
+
+        .stage-topbar,
+        .stage-dialogue {
+            position: absolute;
+            left: 1.2rem;
+            right: 1.2rem;
+            z-index: 2;
+        }
+
+        .stage-topbar {
+            top: 1.15rem;
+            display: flex;
+            justify-content: flex-start;
+            align-items: flex-start;
+        }
+
+        .scene-overlay {
+            position: relative;
+            max-width: min(22rem, calc(100% - 8rem));
+            border-radius: 18px;
+            background: rgba(35, 25, 18, 0.42);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 239, 226, 0.12);
+            overflow: hidden;
+        }
+
+        .scene-overlay summary,
+        .stage-dialogue-details summary {
+            list-style: none;
+            cursor: pointer;
+        }
+
+        .scene-overlay summary {
+            padding: 0.62rem 0.82rem;
+            color: #fff6ee;
+            font-size: 0.84rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .scene-overlay[open] summary {
+            position: absolute;
+            inset: 0;
+            z-index: 3;
+            padding: 0;
+            background: transparent;
+        }
+
+        .scene-overlay[open] summary span {
+            opacity: 0;
+        }
+
+        .scene-overlay summary::-webkit-details-marker,
+        .stage-dialogue-details summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .scene-overlay-body {
+            padding: 0 0.82rem 0.88rem;
+            border-top: 1px solid rgba(255, 239, 226, 0.10);
+        }
+
+        .scene-overlay-title {
+            display: none;
+        }
+
+        .scene-overlay-body h3 {
+            margin: 0.72rem 0 0.35rem;
+            color: #fff7ef;
+            font-size: 1.08rem;
+        }
+
+        .scene-overlay-body p {
+            margin: 0;
+            color: rgba(255, 244, 235, 0.92);
+            font-size: 0.94rem;
+            line-height: 1.66;
+        }
+
+        .scene-overlay:not([open]) .scene-overlay-body,
+        .stage-dialogue-details:not([open]) .stage-dialogue-body {
+            display: none;
+        }
+
+        .scene-overlay[open] .scene-overlay-body {
+            position: relative;
+            z-index: 2;
+            padding-top: 0.82rem;
+            padding-bottom: 1rem;
+            pointer-events: none;
+        }
+
+        .scene-overlay[open] .scene-overlay-title {
+            display: block;
+            margin: 0 0 0.45rem;
+            color: #fff3e4;
+            font-size: 0.82rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .stage-hud {
+            position: absolute;
+            right: 1.2rem;
+            top: 1.15rem;
+            z-index: 2;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            gap: 0.5rem;
+            max-width: 42%;
+        }
+
+        .stage-hud span {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            padding: 0.34rem 0.74rem;
+            background: rgba(34, 25, 18, 0.54);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 238, 221, 0.16);
+            color: #fff6ee;
+            font-size: 0.84rem;
+            white-space: nowrap;
+        }
+
+        .eyebrow {
+            text-transform: uppercase;
+            letter-spacing: 0.16em;
+            font-size: 0.72rem;
+            color: #6f5846;
+            margin-bottom: 0.45rem;
+            font-weight: 600;
+        }
+
+        .scene-overlay .eyebrow,
+        .stage-placeholder .eyebrow,
+        .stage-dialogue .eyebrow {
+            color: rgba(255, 236, 219, 0.76);
+        }
+
+        .stage-dialogue-bottom {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            padding: 1.2rem 1.5rem 1.5rem;
+            background: linear-gradient(to top, rgba(15, 10, 6, 0.92) 0%, rgba(15, 10, 6, 0.75) 60%, transparent 100%);
+            border-radius: 0 0 28px 28px;
+            z-index: 3;
+        }
+
+        .stage-dialogue-bottom .eyebrow {
+            color: rgba(255, 236, 219, 0.85);
+            margin-bottom: 0.4rem;
+            font-size: 0.75rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+        }
+
+        .stage-dialogue-bottom p {
+            margin: 0;
+            color: rgba(255, 248, 240, 0.95);
+            font-size: 1rem;
+            line-height: 1.65;
+            max-height: 6rem;
+            overflow-y: auto;
+        }
+
+        .dialogue-shell {
+            padding: 1rem 1.05rem;
+        }
+
+        .dialogue-shell p {
+            margin: 0.2rem 0 0;
+            color: #59473a;
+        }
+
+        .story-log-button {
+            display: flex;
+            align-items: center;
+            min-height: 100%;
+        }
+
+        .story-log-button.story-log-floating {
+            position: fixed;
+            top: 1.92rem;
+            right: 10.1rem;
+            z-index: 1200;
+            width: auto;
+        }
+
+        .story-log-button.story-log-floating .stButton {
+            width: auto;
+            margin: 0;
+        }
+
+        .story-log-button.story-log-floating .stButton > button {
+            min-height: 3rem;
+            width: auto;
+            height: 3rem;
+            padding: 0.3rem 0.72rem;
+            border-radius: 0.78rem;
+            border: 1px solid rgba(103, 79, 60, 0.24);
+            background: rgba(255, 250, 244, 0.96);
+            box-shadow: 0 10px 22px rgba(61, 43, 30, 0.08);
+            backdrop-filter: blur(10px);
+            color: #4a3629;
+        }
+
+        .gear-toggle {
+            display: flex;
+            justify-content: flex-end;
+            align-items: flex-start;
+            width: auto;
+        }
+
+        .gear-toggle .stButton {
+            width: auto;
+            margin: 0;
+        }
+
+        .gear-toggle .stButton > button {
+            min-height: 3rem;
+            width: auto;
+            height: 3rem;
+            padding: 0.45rem 0.95rem;
+            border-radius: 0.82rem;
+            border: 1px solid rgba(103, 79, 60, 0.24);
+            background: rgba(255, 250, 244, 0.96);
+            box-shadow: 0 10px 22px rgba(61, 43, 30, 0.12);
+            color: #4a3629;
+            font-size: 0.92rem !important;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            line-height: 1 !important;
+            white-space: nowrap;
+        }
+
+        .story-log-button .stButton {
+            width: 100%;
+            margin: 0;
+        }
+
+        .story-log-button .stButton > button {
+            min-height: 3rem;
+            height: 3rem;
+            border-radius: 0.78rem;
+            border: 1px solid rgba(103, 79, 60, 0.24);
+            background: rgba(255, 250, 244, 0.96);
+            box-shadow: 0 10px 22px rgba(61, 43, 30, 0.08);
+            padding: 0.3rem 0.72rem;
+        }
+
+        div[data-testid="stHorizontalBlock"]:has(.story-log-button) {
+            margin-top: -0.68rem;
+            align-items: center;
+        }
+
+        div[data-testid="stHorizontalBlock"]:has(.story-log-button) > div[data-testid="column"] {
+            display: flex;
+            align-items: center;
+        }
+
+        div[data-testid="stHorizontalBlock"]:has(.right-rail-title) {
+            align-items: flex-start;
+        }
+
+        div[data-testid="stHorizontalBlock"]:has(.right-rail-title) > div[data-testid="column"]:first-child {
+            margin-top: -0.68rem;
+        }
+
+        .right-rail-title {
+            padding: 0.9rem 1rem;
+            margin-bottom: 0.85rem;
+            border-radius: 18px;
+            border: 1px solid rgba(112, 84, 62, 0.24);
+            background: linear-gradient(180deg, rgba(221, 206, 188, 0.97), rgba(209, 191, 171, 0.98));
+            box-shadow: 0 18px 34px rgba(58, 40, 28, 0.10);
+        }
+
+        .right-rail-title h3 {
+            margin: 0;
+            color: #2f241c;
+            font-size: 1.34rem;
+            font-weight: 800;
+            text-align: center;
+        }
+
+        .info-overview {
+            margin-bottom: 0.9rem;
+            padding: 0.95rem 1rem;
+            border-radius: 18px;
+            border: 1px solid rgba(118, 89, 66, 0.16);
+            background: linear-gradient(180deg, rgba(246, 239, 230, 0.98), rgba(237, 228, 214, 0.98));
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+        }
+
+        .info-overview h4 {
+            margin: 0.1rem 0 0.4rem;
+            color: #2d221b;
+            font-size: 1.18rem;
+            font-weight: 700;
+        }
+
+        .info-overview p {
+            margin: 0;
+            color: #5b4739;
+            font-size: 0.94rem;
+            line-height: 1.58;
+        }
+
+        .section-note {
+            margin: 0 0 0.75rem;
+            color: #6a5546;
+            font-size: 0.85rem;
+            line-height: 1.45;
+        }
+
+        .status-metrics-wrap {
+            display: flex;
+            justify-content: center;
+            padding: 0.78rem 0 1.68rem;
+        }
+
+        .status-metrics {
+            display: flex;
+            flex-direction: column;
+            gap: 0.22rem;
+            width: min(100%, 14rem);
+            margin: 0 auto;
+        }
+
+        .status-card {
+            border: none;
+            background: transparent;
+            padding: 0.14rem 0;
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            min-height: auto;
+            text-align: left;
+            width: 100%;
+            line-height: 1.45;
+        }
+
+        .status-card-label {
+            display: inline-flex;
+            color: #2b211a;
+            font-size: 1rem;
+            letter-spacing: 0;
+            text-transform: none;
+            white-space: nowrap;
+            font-weight: 400;
+            line-height: 1.45;
+        }
+
+        .status-card-value {
+            display: inline-grid;
+            grid-template-columns: 4ch 1ch 4ch;
+            align-items: center;
+            justify-content: end;
+            color: #2b211a;
+            font-size: 1rem;
+            line-height: 1.45;
+            font-weight: 400;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .status-card-current,
+        .status-card-max {
+            display: inline-block;
+        }
+
+        .status-card-current {
+            text-align: right;
+        }
+
+        .status-card-sep {
+            text-align: center;
+        }
+
+        .status-card-max {
+            text-align: left;
+        }
+
+        .artifact-chip-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.55rem;
+        }
+
+        .artifact-chip {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.34rem 0.78rem;
+            border-radius: 999px;
+            border: 1px solid rgba(101, 76, 57, 0.18);
+            background: linear-gradient(180deg, rgba(241, 231, 215, 0.96), rgba(231, 219, 201, 0.96));
+            color: #47352b;
+            font-size: 0.9rem;
+            box-shadow: 0 8px 16px rgba(73, 52, 37, 0.05);
+        }
+
+        .fact-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.72rem;
+        }
+
+        .fact-card {
+            padding: 0.72rem 0.82rem;
+            border-radius: 14px;
+            border: 1px solid rgba(112, 84, 62, 0.16);
+            background: rgba(255, 250, 244, 0.78);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+        }
+
+        .fact-label {
+            display: block;
+            margin-bottom: 0.16rem;
+            color: #705748;
+            font-size: 0.74rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .fact-value {
+            display: block;
+            color: #2d221b;
+            font-size: 1.02rem;
+            font-weight: 700;
+        }
+
+        .check-card strong {
+            font-size: 1.05rem;
+        }
+
+        .check-card {
+            border-radius: 14px;
+            padding: 0.92rem 1rem;
+            background: rgba(255, 250, 244, 0.82);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.56);
+        }
+
+        .check-card.critical { border-left: 6px solid #315b4c; }
+        .check-card.success { border-left: 6px solid #55734a; }
+        .check-card.failure { border-left: 6px solid #9a6d34; }
+        .check-card.fumble { border-left: 6px solid #7b2f2f; }
+
+        .stButton > button {
+            border-radius: 999px;
+            border: 1px solid rgba(94, 68, 50, 0.2);
+            min-height: 2.45rem;
+            background: rgba(255, 249, 241, 0.88);
+            color: #2b211a;
+            font-weight: 600;
+        }
+
+        .stButton > button[kind="primary"] {
+            background: linear-gradient(135deg, #8a5a34, #6e4424);
+            color: #fffaf2;
+            border-color: #6e4424;
+        }
+
+        .story-log-button .stButton > button,
+        .sidebar-toggle .stButton > button {
+            font-size: 0.92rem;
+        }
+
+        .story-log-button .stButton > button p {
+            white-space: nowrap;
+            line-height: 1;
+            text-align: center;
+        }
+
+        div[data-testid="stHorizontalBlock"]:has(.story-log-button) > div[data-testid="column"]:first-child button {
+            font-size: 0.5rem !important;
+        }
+
+        div[data-testid="stHorizontalBlock"]:has(.story-log-button) > div[data-testid="column"]:first-child button * {
+            font-size: 0.5rem !important;
+            line-height: 1 !important;
+            white-space: nowrap !important;
+        }
+
+        div[data-testid="stChatMessage"] {
+            background: rgba(255, 250, 245, 0.7);
+            border: 1px solid rgba(94, 68, 50, 0.11);
+            border-radius: 18px;
+            padding: 0.3rem 0.5rem;
+        }
+
+        div[data-testid="stExpander"] {
+            border: 1px solid rgba(108, 80, 58, 0.18);
+            border-radius: 16px;
+            background: linear-gradient(180deg, rgba(233, 220, 204, 0.95), rgba(223, 208, 191, 0.97));
+            box-shadow: 0 12px 24px rgba(60, 42, 30, 0.07);
+        }
+
+        div[data-testid="stExpander"] summary {
+            padding: 0.18rem 0.08rem;
+            color: #2d221b;
+            font-weight: 700;
+            font-size: 1rem;
+            letter-spacing: 0.01em;
+        }
+
+        div[data-testid="stExpanderDetails"] {
+            padding-top: 0.96rem;
+            padding-bottom: 1.18rem;
+        }
+
+        @media (max-width: 980px) {
+            .main .block-container {
+                padding-top: 1.1rem;
+            }
+
+            .stage-shell,
+            .stage-visual {
+                aspect-ratio: auto;
+            }
+
+            .stage-topbar {
+                flex-direction: column;
+            }
+
+            .scene-overlay,
+            .stage-hud {
+                max-width: 100%;
+            }
+
+            .stage-dialogue {
+                left: 1rem;
+                right: 1rem;
+                max-width: none;
+                bottom: 1rem;
+            }
+
+            .story-log-button.story-log-floating {
+                top: 1rem;
+                right: 8.9rem;
+            }
+        }
+        </style>
+        """
+    st.markdown(style_block.replace("__BG_ASPECT_RATIO__", background_aspect_ratio), unsafe_allow_html=True)
+
+
+# 涓昏瑙夎垶鍙帮細淇濈暀鑳屾櫙鍥俱€佸満鏅弿杩版偓娴崱鍜岃交閲忎俊鎭?HUD銆?def render_header() -> None:
+    state, player, scene, _, _, _, _ = visible_scene_data()
+    scene_name = scene.name if scene else "鏈繘鍏ュ満鏅?
+    description = scene.description.get_public_text() if scene else "娓告垙灏氭湭鍒濆鍖栧畬鎴愩€?
+    stage_dialogue = latest_stage_dialogue(description)
+    stage_dialogue_content = str(stage_dialogue.get("content") or description or "璋冩煡浠嶅湪缁х画銆?)
+    if stage_dialogue.get("speaker") == "鍦烘櫙鎻愮ず":
+        stage_dialogue_body = f"<p>{format_text(stage_dialogue_content)}</p>"
+    else:
+        stage_dialogue_body = (
+            f'<div class="eyebrow">{html.escape(str(stage_dialogue.get("speaker") or ""))}</div>'
+            f"<p>{format_text(stage_dialogue_content)}</p>"
+        )
+    background_image_uri = (
+        st.session_state.get("background_image_uri")
+        if st.session_state.get("background_enabled", True)
+        else None
+    )
+    visual_markup = (
+        f'<img src="{html.escape(background_image_uri)}" alt="{html.escape(scene_name)}">'
+        if background_image_uri
+        else f"""
+        <div class="stage-placeholder">
+            <div class="eyebrow">Visual Stage</div>
+            <h2>{html.escape(scene_name)}</h2>
+            <p>{format_text(description)}</p>
+        </div>
+        """
+    )
+    st.markdown(
+        f"""
+        <div class="stage-shell">
+            <div class="stage-visual">
+                {visual_markup}
+                <div class="stage-scrim"></div>
+                <div class="stage-topbar">
+                    <details class="scene-overlay">
+                        <summary><span>鍦烘櫙鎻忚堪</span></summary>
+                        <div class="scene-overlay-body">
+                            <div class="scene-overlay-title">鍦烘櫙鎻忚堪</div>
+                            <h3>{html.escape(scene_name)}</h3>
+                            <p>{format_text(description)}</p>
+                        </div>
+                    </details>
+                </div>
+                <div class="stage-hud">
+                    <span>鍥炲悎 {state.turn_count}</span>
+                    <span>鐜╁ {html.escape(player.name if player else '鏈煡')}</span>
+                </div>
+                <div class="stage-dialogue-bottom">
+                    {stage_dialogue_body}
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_main_scene_panel() -> None:
+    """Main window scene facts: scene, exits, actors, and visible items."""
+    _, _, scene, _, item_names, npc_names, exits = visible_scene_data()
+    scene_name = scene.name if scene else "鏈煡鍦烘櫙"
+
+    with st.container(border=True):
+        st.markdown(
+            f"""
+            <div class="info-overview">
+                <div class="eyebrow">褰撳墠鍦烘櫙</div>
+                <h4>{html.escape(scene_name)}</h4>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        col1, col2 = st.columns(2, gap="small")
+        with col1:
+            st.caption("鍦ㄥ満瑙掕壊")
+            render_chips(npc_names, "褰撳墠娌℃湁鍏朵粬鍦ㄥ満瑙掕壊銆?)
+        with col2:
+            st.caption("鍙鐗╁搧")
+            render_chips(item_names, "褰撳墠娌℃湁鍙鐗╁搧銆?)
+
+        st.caption("鍙€氬線鍦扮偣")
+        render_exit_buttons(exits, key_prefix="main-move")
+
+
+# 鍥炲悎娴侀潰鏉匡細淇濈暀鍘熸湁娓叉煋閫昏緫锛屼絾鏀寔宓屽叆寮忓睍寮€鏄剧ず銆?def render_feed_panel(*, show_title: bool = True, height: int = 420) -> None:
+    if show_title:
+        st.subheader("鍓ф儏璁板綍")
+    if not st.session_state.feed:
+        st.caption("杩樻病鏈夊洖鍚堣褰曘€?)
+        return
+
+    with st.container(height=height, border=True):
+        for message in st.session_state.feed:
+            with st.chat_message(message["role"]):
+                kind = message.get("kind", "text")
+                if kind == "check":
+                    extra = message.get("extra", {})
+                    st.markdown(
+                        f"""
+                        <div class="check-card {html.escape(extra.get('result_class', 'neutral'))}">
+                            <div class="eyebrow">Check Result</div>
+                            <strong>{html.escape(extra.get('result_text', '鏈煡'))}</strong><br>
+                            d100锛歿extra.get('dice_roll', '-')} / 鐩爣鍊硷細{extra.get('target_value', '-')} / 灞炴€у€硷細{extra.get('actor_value', '-')}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    if extra.get("detail"):
+                        st.caption(extra["detail"])
+                elif kind == "system":
+                    st.caption(message["content"])
+                elif kind == "error":
+                    st.error(message["content"])
+                elif kind == "security":
+                    st.warning(message["content"])
+                    extra = message.get("extra", {})
+                    if isinstance(extra, dict) and extra.get("hint"):
+                        st.caption(str(extra["hint"]))
+                elif kind == "ending":
+                    st.warning(message["content"])
+                else:
+                    st.markdown(f"<p>{format_text(str(message['content']))}</p>", unsafe_allow_html=True)
+
+
+# 鍙充晶淇℃伅鏍忛噷鐨勭Щ鍔ㄨ矾绾挎寜閽€?def render_exit_buttons(exits: list[dict[str, str]], key_prefix: str) -> None:
+    if not exits:
+        st.caption("褰撳墠鍦烘櫙娌℃湁瀹氫箟鐩搁偦鍑哄彛銆?)
+        return
+
+    for idx, exit_item in enumerate(exits):
+        label = f"{exit_item['direction']} 路 {exit_item['description'] or exit_item['target_id']}"
+        if st.button(label, key=f"{key_prefix}-{idx}", use_container_width=True):
+            handle_turn(f"\\move {exit_item['direction']}", display_input=f"鍓嶅線 {exit_item['direction']}")
+            st.rerun()
+
+
+# 鍙充晶淇℃伅鏍忛噷鐨勫父鐢ㄥ姩浣滄寜閽€?def render_quick_actions(key_prefix: str) -> None:
+    action_cols = st.columns(2, gap="small")
+    quick_actions = [
+        ("鏌ョ湅鍦烘櫙", "\\look"),
+        ("褰撳墠浣嶇疆", "\\where"),
+        ("鏌ョ湅鐘舵€?, "\\status"),
+        ("鏌ョ湅鑳屽寘", "\\inventory"),
+        ("AI绛涙煡鐘舵€?, "\\screen ai status"),
+        ("AI绛涙煡寮€鍚?, "\\screen ai on"),
+        ("AI绛涙煡鍏抽棴", "\\screen ai off"),
+        ("閫熷害鐘舵€?, "\\speed status"),
+        ("蹇€熸ā寮?, "\\speed fast"),
+        ("璐ㄩ噺妯″紡", "\\speed quality"),
+    ]
+    for idx, (label, command) in enumerate(quick_actions):
+        target = action_cols[idx % 2]
+        if target.button(label, key=f"{key_prefix}-{idx}", use_container_width=True):
+            handle_turn(command, display_input=label)
+            st.rerun()
+
+
+# 娓告垙淇℃伅鍐呭浣擄細鍙敤浜庡彸鏍忔垨寮瑰眰灞曠ず銆?def render_right_sidebar(show_title: bool = True, *, bordered: bool = True) -> None:
+    state, player, scene, inventory_names, item_names, npc_names, exits = visible_scene_data()
+    with st.container(border=bordered):
+        if show_title:
+            st.markdown(
+                """
+                <div class="right-rail-title">
+                    <h3>游戏信息</h3>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        if not player:
+            st.warning("当前未找到玩家角色。")
+            return
+
+        scene_name = scene.name if scene else "未知场景"
+        scene_summary = " · ".join(
+            [
+                f"回合 {state.turn_count}",
+                f"背包 {len(inventory_names)} 项",
+                f"可通往地点 {len(exits)}",
+            ]
+        )
+        st.markdown(
+            f"""
+            <div class="info-overview">
+                <div class="eyebrow">当前概览</div>
+                <h4>{html.escape(scene_name)}</h4>
+                <p>{html.escape(scene_summary)}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        with st.expander("背包", expanded=False):
+            st.markdown(
+                '<p class="section-note">这里展示玩家当前携带物品，便于回合中快速确认。</p>',
+                unsafe_allow_html=True,
+            )
+            render_chips(inventory_names, "背包当前为空。")
+
+        with st.expander("移动路线", expanded=False):
+            st.markdown(
+                '<p class="section-note">可在此直接选择出口推进探索。</p>',
+                unsafe_allow_html=True,
+            )
+            render_exit_buttons(exits, key_prefix="right-move")
+
+        with st.expander("常用动作", expanded=False):
+            st.markdown(
+                '<p class="section-note">系统控制与运行状态。</p>',
+                unsafe_allow_html=True,
+            )
+            runtime_status = get_runtime_control_status()
+            render_fact_grid(
+                [
+                    ("AI筛查", runtime_status["ai_screening"]),
+                    ("速度模式", runtime_status["speed_mode"]),
+                ]
+            )
+            render_quick_actions("right-quick")
+
+def render_story_log_toggle(*, floating: bool = False) -> None:
+    class_name = "story-log-button story-log-floating" if floating else "story-log-button"
+    st.markdown(f'<div class="{class_name}">', unsafe_allow_html=True)
+    if st.button("鍓ф儏", key="story-log-toggle", use_container_width=True):
+        st.session_state.story_log_open = True
+        st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+# 娓告垙淇℃伅鍏ュ彛鏀惧湪宸︿晶杈规爮閲岋紝鐐瑰嚮鍚庡脊鍑烘父鎴忎俊鎭獥鍙ｃ€?def render_game_info_toggle() -> None:
+    if st.button("娓告垙淇℃伅", key="game-info-toggle", use_container_width=True):
+        st.session_state.right_sidebar_open = True
+        st.rerun()
+
+
+# 鍓ф儏璁板綍鍏抽棴鍥炶皟銆?def close_story_log() -> None:
+    st.session_state.story_log_open = False
+
+
+# 娓告垙淇℃伅鍏抽棴鍥炶皟銆?def close_game_info_dialog() -> None:
+    st.session_state.right_sidebar_open = False
+
+
+# 鍓ф儏璁板綍浠ュぇ寮瑰眰褰㈠紡灞曠ず锛岄伩鍏嶅帇缂╀富杈撳叆鍖恒€?@st.dialog("鍓ф儏璁板綍", width="large", on_dismiss=close_story_log)
+def render_story_log_dialog() -> None:
+    render_feed_panel(show_title=False, height=560)
+    if st.button("鍏抽棴鍓ф儏璁板綍", key="close-story-log-dialog", use_container_width=True):
+        close_story_log()
+        st.rerun()
+
+
+# 娓告垙淇℃伅鐢ㄤ笌鈥滃墽鎯呪€濅竴鑷寸殑寮瑰眰灞曞紑銆?@st.dialog("娓告垙淇℃伅", width="large", on_dismiss=close_game_info_dialog)
+def render_game_info_dialog() -> None:
+    render_right_sidebar(show_title=False, bordered=False)
+    if st.button("鍏抽棴娓告垙淇℃伅", key="close-game-info-dialog", use_container_width=True):
+        close_game_info_dialog()
+        st.rerun()
+
+
+# 杈撳叆妗嗘彁浜ゅ洖璋冿細鏀寔鍥炶溅鍜屽彂閫佹寜閽叡鐢ㄥ悓涓€濂楅€昏緫銆?def submit_action_input() -> None:
+    prompt = str(st.session_state.get("action_input_value", "")).strip()
+    if not prompt:
+        return
+    if st.session_state.get("turn_in_progress", False):
+        return
+    handle_turn(prompt)
+    st.session_state.action_input_value = ""
+
+
+# 瀵硅瘽杈撳叆鍖猴細淇濈暀鑷劧璇█杈撳叆锛屼絾缁勭粐鎴愭洿姝ｅ紡鐨勯槄璇荤晫闈€?def render_input_panel() -> None:
+    engine = st.session_state.engine
+    disabled = engine.is_game_over() or st.session_state.get("turn_in_progress", False)
+
+    input_col, submit_col = st.columns([0.86, 0.14], gap="small", vertical_alignment="center")
+    input_col.text_input(
+        "杈撳叆浣犵殑琛屽姩",
+        key="action_input_value",
+        label_visibility="collapsed",
+        placeholder="渚嬪锛氭垜妫€鏌ヤ功妗屾娊灞?,
+        disabled=disabled,
+        on_change=submit_action_input,
+    )
+
+    if submit_col.button(
+        "鍙戦€?,
+        key="submit-action-input",
+        use_container_width=True,
+        type="primary",
+        disabled=disabled,
+    ):
+        submit_action_input()
+        st.rerun()
+
+
+# 涓诲唴瀹瑰尯搴曢儴锛氬乏渚у墽鎯呭叆鍙ｏ紝鍙充晶杈撳叆鍖恒€?def render_dialogue_workspace() -> None:
+    weights = [1.0, 4.55] if st.session_state.story_log_open else [0.74, 4.78]
+    log_col, input_col = st.columns(weights, gap="small", vertical_alignment="center")
+
+    with log_col:
+        render_story_log_toggle()
+
+    with input_col:
+        render_input_panel()
+
+
+# 宸︿晶渚ц竟鏍忓彧淇濈暀蹇呰鎺у埗椤广€?def render_sidebar() -> None:
+    current_world = st.session_state.selected_world
+    available_worlds = list_worlds()
+
+    with st.sidebar:
+        st.title(APP_TITLE)
+        for one in startup_warnings():
+            st.warning(one)
+
+        selected_world = st.selectbox(
+            "世界",
+            options=available_worlds,
+            index=available_worlds.index(current_world) if current_world in available_worlds else 0,
+            format_func=world_label,
+        )
+        st.session_state.selected_world = selected_world
+
+        st.markdown("---")
+        available_saves = list_saves()
+        current_save = st.session_state.get("_save_name", DEFAULT_SAVE)
+
+        if available_saves:
+            initial_save = current_save if current_save in available_saves else available_saves[0]
+            save_name = st.selectbox(
+                "存档",
+                options=available_saves,
+                index=available_saves.index(initial_save),
+                key="selected_save_name",
+            )
+            st.session_state._save_name = save_name
+        else:
+            st.session_state._save_name = DEFAULT_SAVE
+            st.caption("当前没有可读取的存档。首次保存后可在此选择。")
+
+        action_col1, action_col2 = st.columns(2)
+        if action_col1.button("开始新游戏", use_container_width=True, type="primary"):
+            bootstrap_session(selected_world)
+            st.rerun()
+        if action_col2.button("读取存档", use_container_width=True, disabled=not bool(available_saves)):
+            bootstrap_session(selected_world, load_name=st.session_state._save_name)
+            st.rerun()
+
+        if st.button("保存当前进度", use_container_width=True):
+            engine = st.session_state.engine
+            save_name = st.session_state.get("_save_name", DEFAULT_SAVE)
+            ok = engine.save_game(save_name)
+            if ok:
+                st.success(f"已保存到 {save_name}")
+            else:
+                st.error(f"保存失败：{save_name}")
+
+        st.markdown("---")
+        render_game_info_toggle()
+
+def main() -> None:
+    ensure_session()
+    inject_styles(
+        (
+            st.session_state.get("background_image_uri")
+            if st.session_state.get("background_enabled", True)
+            else None
+        ),
+        st.session_state.get("background_aspect_ratio", "3 / 2"),
+    )
+    render_sidebar()
+
+    engine = st.session_state.engine
+    render_header()
+    render_main_scene_panel()
+    render_dialogue_workspace()
+
+    if engine.is_game_over():
+        st.warning("娓告垙宸茬粡缁撴潫銆備綘鍙互璇诲彇瀛樻。鎴栭噸鏂板紑濮嬫柊娓告垙銆?)
+
+    if st.session_state.story_log_open:
+        render_story_log_dialog()
+    if st.session_state.right_sidebar_open:
+        render_game_info_dialog()
+
+
+if __name__ == "__main__":
+    main()
+
